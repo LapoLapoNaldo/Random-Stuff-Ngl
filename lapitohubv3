@@ -1153,7 +1153,7 @@ local function CreateStagesTab()
         {DisplayName = "Dessert Witch", Trigger = "Dessert Witch"},
     }
     
-    local difficulties = {"Normal", "Hard", "Insane", "Nightmare", "Master"}
+    local difficulties = {"Normal", "Hard", "Insane", "Nightmare", "Master","Unique"}
     local methodOptions = {GetText("methodCreateRoom"), GetText("methodSolo")}
     
     local selectedStageTrigger = stages[1].Trigger
