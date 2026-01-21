@@ -1,7 +1,3 @@
---// LapoUI V5.1 (Single-file) - Refactor + Dynamic Themes + Mobile Optimizations + Edge-case Fixes
---// Mantém a mesma API pública: LapoUI.create + UI:CreateTab():Section/Button/Toggle/Dropdown/Textbox/Slider/ProgressBar/ColorPicker/KeyBind + UI:Notify + UI:Destroy
---// NOVO (opcional, sem quebrar nada): UI:SetTheme(name[, animate]) / UI:GetTheme() / UI:ListThemes()
-
 -- ========================= Services
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
