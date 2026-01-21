@@ -1,1 +1,2070 @@
+--// LapoUI V5.1 (Single-file) - Refactor + Dynamic Themes + Mobile Optimizations + Edge-case Fixes
+--// Mantém a mesma API pública: LapoUI.create + UI:CreateTab():Section/Button/Toggle/Dropdown/Textbox/Slider/ProgressBar/ColorPicker/KeyBind + UI:Notify + UI:Destroy
+--// NOVO (opcional, sem quebrar nada): UI:SetTheme(name[, animate]) / UI:GetTheme() / UI:ListThemes()
 
+-- ========================= Services
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
+-- ========================= Global Export
+local ENV = (getgenv and getgenv()) or _G
+ENV.LapoUI = ENV.LapoUI or {}
+local LapoUI = ENV.LapoUI
+LapoUI.__index = LapoUI
+
+-- Allow calling module table as a function: `LapoUI(cfg)` → `LapoUI.create(cfg)`
+setmetatable(LapoUI, {
+	__call = function(self, cfg)
+		if type(self.create) == "function" then
+			return self.create(cfg)
+		end
+		error("LapoUI.create is not available", 2)
+	end,
+})
+
+-- =========================================================
+-- Utils (internal module)
+-- =========================================================
+local Utils = {}
+
+function Utils.new(class, props)
+	local o = Instance.new(class)
+	if props then
+		for k, v in pairs(props) do
+			o[k] = v
+		end
+	end
+	return o
+end
+
+function Utils.tween(obj, t, props, style, dir)
+	if not obj then return nil end
+	local info = TweenInfo.new(t or 0.2, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out)
+	local tw = TweenService:Create(obj, info, props)
+	tw:Play()
+	return tw
+end
+
+function Utils.safeCall(fn, ...)
+	if fn == nil then return end
+	local ok, err = pcall(fn, ...)
+	if not ok then
+		warn("[LapoUI]", err)
+	end
+end
+
+function Utils.cleanup(list)
+	for i = #list, 1, -1 do
+		local c = list[i]
+		if c then
+			pcall(function()
+				if typeof(c) == "RBXScriptConnection" then
+					c:Disconnect()
+				elseif type(c) == "table" and c.Disconnect then
+					c:Disconnect()
+				elseif type(c) == "table" and c.disconnect then
+					c:disconnect()
+				end
+			end)
+		end
+		list[i] = nil
+	end
+end
+
+function Utils.bind(list, signal, fn)
+	local c = signal:Connect(fn)
+	table.insert(list, c)
+	return c
+end
+
+function Utils.getGuiParent()
+	if gethui and type(gethui) == "function" then
+		local g = gethui()
+		if g then return g end
+	end
+	local ok = pcall(function() return CoreGui.Parent end)
+	if ok then return CoreGui end
+	local lp = Players.LocalPlayer
+	if lp then
+		return lp:WaitForChild("PlayerGui")
+	end
+	return CoreGui
+end
+
+function Utils.uiStroke(parent, color, thick, tr)
+	local s = Instance.new("UIStroke")
+	s.Color = color
+	s.Thickness = thick or 1.2
+	s.Transparency = tr or 0
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = parent
+	return s
+end
+
+function Utils.dropShadow(parent, size, tr, zOffset, imageId)
+	local holder = Utils.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 1, 0),
+		ZIndex = (parent.ZIndex or 1) + (zOffset or -1),
+		ClipsDescendants = false,
+		Parent = parent,
+	})
+	Utils.new("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = size or UDim2.new(1, 40, 1, 40),
+		BackgroundTransparency = 1,
+		Image = imageId or "rbxassetid://6014261993",
+		ImageColor3 = Color3.new(0, 0, 0),
+		ImageTransparency = tr or 0.55,
+		ScaleType = Enum.ScaleType.Slice,
+		SliceCenter = Rect.new(49, 49, 450, 450),
+		Parent = holder,
+	})
+	return holder
+end
+
+function Utils.makeDraggable(connections, gui, handle)
+	handle = handle or gui
+	local dragging = false
+	local startPos, startInput
+
+	Utils.bind(connections, handle.InputBegan, function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			startInput = i.Position
+			startPos = gui.AbsolutePosition
+
+			local endedConn
+			endedConn = i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then
+					dragging = false
+					if endedConn then endedConn:Disconnect() end
+				end
+			end)
+		end
+	end)
+
+	Utils.bind(connections, UserInputService.InputChanged, function(i)
+		if not dragging or not startInput or not startPos then return end
+		if i.UserInputType ~= Enum.UserInputType.MouseMovement and i.UserInputType ~= Enum.UserInputType.Touch then return end
+
+		local d = i.Position - startInput
+		local cam = Workspace.CurrentCamera
+		local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+
+		local nx = math.clamp(startPos.X + d.X, 0, math.max(vp.X - gui.AbsoluteSize.X, 0))
+		local ny = math.clamp(startPos.Y + d.Y, 0, math.max(vp.Y - gui.AbsoluteSize.Y, 0))
+		gui.Position = UDim2.fromOffset(nx, ny)
+	end)
+end
+
+-- =========================================================
+-- Themes (internal module)
+-- =========================================================
+local Themes = {}
+
+Themes.Dark = {
+	Panel     = Color3.fromRGB(6, 8, 18),
+	Header    = Color3.fromRGB(12, 14, 26),
+	SidebarBg = Color3.fromRGB(8, 10, 22),
+
+	ItemBg     = Color3.fromRGB(16, 20, 34),
+	ItemHover  = Color3.fromRGB(24, 28, 48),
+	ItemActive = Color3.fromRGB(38, 46, 84),
+
+	Stroke = Color3.fromRGB(70, 80, 120),
+	Shadow = Color3.new(0, 0, 0),
+
+	TextMain = Color3.fromRGB(235, 238, 255),
+	TextSub  = Color3.fromRGB(170, 180, 210),
+
+	Primary = Color3.fromRGB(125, 150, 255),
+	Success = Color3.fromRGB(90, 220, 160),
+	Danger  = Color3.fromRGB(255, 100, 120),
+
+	CornerD = 18,
+	CornerM = 12,
+	PadItem = 10,
+}
+
+Themes.Light = {
+	Panel     = Color3.fromRGB(242, 244, 250),
+	Header    = Color3.fromRGB(255, 255, 255),
+	SidebarBg = Color3.fromRGB(250, 250, 255),
+
+	ItemBg     = Color3.fromRGB(255, 255, 255),
+	ItemHover  = Color3.fromRGB(235, 240, 255),
+	ItemActive = Color3.fromRGB(210, 225, 255),
+
+	Stroke = Color3.fromRGB(140, 150, 175),
+	Shadow = Color3.new(0, 0, 0),
+
+	TextMain = Color3.fromRGB(22, 28, 40),
+	TextSub  = Color3.fromRGB(70, 80, 105),
+
+	Primary = Color3.fromRGB(80, 120, 255),
+	Success = Color3.fromRGB(40, 170, 120),
+	Danger  = Color3.fromRGB(230, 80, 90),
+
+	CornerD = 18,
+	CornerM = 12,
+	PadItem = 10,
+}
+
+Themes.Neon = {
+	Panel     = Color3.fromRGB(6, 6, 12),
+	Header    = Color3.fromRGB(12, 10, 20),
+	SidebarBg = Color3.fromRGB(8, 8, 16),
+
+	ItemBg     = Color3.fromRGB(18, 16, 28),
+	ItemHover  = Color3.fromRGB(26, 22, 44),
+	ItemActive = Color3.fromRGB(40, 30, 70),
+
+	Stroke = Color3.fromRGB(140, 60, 255),
+	Shadow = Color3.new(0, 0, 0),
+
+	TextMain = Color3.fromRGB(245, 245, 255),
+	TextSub  = Color3.fromRGB(195, 175, 255),
+
+	Primary = Color3.fromRGB(170, 60, 255),
+	Success = Color3.fromRGB(60, 255, 200),
+	Danger  = Color3.fromRGB(255, 70, 140),
+
+	CornerD = 18,
+	CornerM = 12,
+	PadItem = 10,
+}
+
+Themes.Ocean = {
+	Panel     = Color3.fromRGB(6, 12, 18),
+	Header    = Color3.fromRGB(10, 18, 28),
+	SidebarBg = Color3.fromRGB(8, 14, 22),
+
+	ItemBg     = Color3.fromRGB(14, 26, 36),
+	ItemHover  = Color3.fromRGB(18, 34, 48),
+	ItemActive = Color3.fromRGB(24, 52, 70),
+
+	Stroke = Color3.fromRGB(80, 140, 170),
+	Shadow = Color3.new(0, 0, 0),
+
+	TextMain = Color3.fromRGB(230, 248, 255),
+	TextSub  = Color3.fromRGB(150, 210, 220),
+
+	Primary = Color3.fromRGB(60, 200, 220),
+	Success = Color3.fromRGB(80, 220, 160),
+	Danger  = Color3.fromRGB(255, 110, 120),
+
+	CornerD = 18,
+	CornerM = 12,
+	PadItem = 10,
+}
+
+Themes.Space = {
+	Panel     = Color3.fromRGB(5, 6, 16),
+	Header    = Color3.fromRGB(10, 10, 26),
+	SidebarBg = Color3.fromRGB(7, 8, 22),
+
+	ItemBg     = Color3.fromRGB(14, 16, 40),
+	ItemHover  = Color3.fromRGB(18, 22, 60),
+	ItemActive = Color3.fromRGB(28, 32, 84),
+
+	Stroke = Color3.fromRGB(110, 120, 210),
+	Shadow = Color3.new(0, 0, 0),
+
+	TextMain = Color3.fromRGB(240, 240, 255),
+	TextSub  = Color3.fromRGB(175, 185, 230),
+
+	Primary = Color3.fromRGB(120, 140, 255),
+	Success = Color3.fromRGB(95, 230, 175),
+	Danger  = Color3.fromRGB(255, 100, 140),
+
+	CornerD = 18,
+	CornerM = 12,
+	PadItem = 10,
+}
+
+local function cloneTheme(t)
+	local out = {}
+	for k, v in pairs(t) do
+		out[k] = v
+	end
+	return out
+end
+
+-- =========================================================
+-- Components (internal module)
+-- =========================================================
+local Components = {}
+
+-- helper: tab add
+local function tabAdd(tab, item)
+	item.Parent = tab.Scroller
+	table.insert(tab.Components, item)
+end
+
+-- =========================================================
+-- Core / Public API (single-file)
+-- =========================================================
+function LapoUI.create(cfg)
+	cfg = cfg or {}
+
+	-- ===== Platform / sizing
+	local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	local IsTablet = UserInputService.TouchEnabled and UserInputService.KeyboardEnabled
+
+	local Width  = IsMobile and (cfg.WidthMobile or 320) or (cfg.Width or 580)
+	local Height = IsMobile and (cfg.HeightMobile or 300) or (cfg.Height or 520)
+
+	local Title = cfg.Title or (IsMobile and "Lapo Hub" or "Lapo Hub V5.1")
+	local HeaderSubtitle = cfg.Subtitle or cfg.HeaderSubtitle or "Made By Luvwas"
+
+	local Hotkey = (cfg.Hotkey ~= nil) and cfg.Hotkey or (not IsMobile and Enum.KeyCode.K or nil)
+	local MobileFloating = (cfg.MobileFloating ~= false)
+	local ResetOnSpawn = cfg.ResetOnSpawn and true or false
+
+	-- ===== Loading config
+	local LoadingTitle    = cfg.LoadingTitle or Title
+	local LoadingSubtitle = cfg.LoadingSubtitle or "Carregando interface..."
+	local LoadingImage    = cfg.LoadingImage
+	local LoadingTime     = tonumber(cfg.LoadingTime) or 1.5
+	local EnableLoading   = (cfg.LoadingScreen ~= false)
+
+	-- ===== Theme
+	local themeName = tostring(cfg.Theme or "Dark")
+	if not Themes[themeName] then themeName = "Dark" end
+	local Theme = cloneTheme(Themes[themeName])
+
+	-- ===== UI Object
+	local UI = {
+		_destroyed = false,
+		_open = true,
+
+		_isMobile = IsMobile,
+		_isTablet = IsTablet,
+
+		_tabs = {},
+		_tabOrder = {},
+		_activeTab = nil,
+
+		_connections = {},
+		_popupConns = {},
+		_openOverlay = nil,
+
+		_themeName = themeName,
+		_theme = Theme,
+
+		-- themed registry: { {obj=Instance, prop="BackgroundColor3", key="Panel"} ... }
+		_themed = {},
+		-- hover registry: { {obj=Instance, baseKey="ItemBg", hoverKey="ItemHover", activeKey="ItemActive", isActiveFn=function()->bool } }
+		_hoverables = {},
+	}
+	setmetatable(UI, LapoUI)
+
+	-- ===== ScreenGui
+	local screen = Utils.new("ScreenGui", {
+		Name = "LapoUI_V5_1",
+		ResetOnSpawn = ResetOnSpawn,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		IgnoreGuiInset = true,
+		Parent = Utils.getGuiParent(),
+	})
+	UI._screen = screen
+
+	-- ===== Theme registry helpers
+	function UI:_regTheme(obj, prop, key)
+		if not obj then return obj end
+		table.insert(self._themed, { obj = obj, prop = prop, key = key })
+		pcall(function()
+			obj[prop] = self._theme[key]
+		end)
+		return obj
+	end
+
+	function UI:_applyTheme(animate)
+		local t = self._theme
+		for i = #self._themed, 1, -1 do
+			local rec = self._themed[i]
+			local obj = rec.obj
+			if not obj or not obj.Parent then
+				table.remove(self._themed, i)
+			else
+				local target = t[rec.key]
+				if target ~= nil then
+					if animate then
+						Utils.tween(obj, 0.18, { [rec.prop] = target })
+					else
+						pcall(function() obj[rec.prop] = target end)
+					end
+				end
+			end
+		end
+	end
+
+	function UI:ListThemes()
+		local names = {}
+		for k in pairs(Themes) do table.insert(names, k) end
+		table.sort(names)
+		return names
+	end
+
+	function UI:GetTheme()
+		return self._themeName, self._theme
+	end
+
+	function UI:SetTheme(name, animate)
+		if self._destroyed then return end
+		name = tostring(name or "Dark")
+		if not Themes[name] then
+			warn("[LapoUI] Tema inválido:", name)
+			return
+		end
+		self._themeName = name
+		self._theme = cloneTheme(Themes[name])
+		-- keep convenience fields
+		Theme = self._theme
+		self:_applyTheme(animate ~= false)
+	end
+
+	-- ===== Popup system (centralized)
+	local blocker = Utils.new("TextButton", {
+		Name = "ModalBlocker",
+		Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		Modal = true,
+		ZIndex = 4000,
+		Visible = false,
+		Parent = screen,
+	})
+	UI._blocker = blocker
+
+	function UI:_closePopup()
+		if self._openOverlay then
+			pcall(function() self._openOverlay.Visible = false end)
+			self._openOverlay = nil
+		end
+		self._blocker.Visible = false
+		Utils.cleanup(self._popupConns)
+		self._popupConns = {}
+	end
+
+	function UI:_openPopup(popup)
+		if self._openOverlay and self._openOverlay ~= popup then
+			self:_closePopup()
+		end
+		self._openOverlay = popup
+		self._blocker.Visible = true
+		popup.Visible = true
+
+		Utils.bind(self._popupConns, UserInputService.InputBegan, function(i, gp)
+			if gp then return end
+			if i.KeyCode == Enum.KeyCode.Escape then
+				self:_closePopup()
+			end
+		end)
+	end
+
+	Utils.bind(UI._connections, blocker.MouseButton1Click, function()
+		if UI._openOverlay then UI:_closePopup() end
+	end)
+
+	-- ===== Notify root
+	local notifyRoot = Utils.new("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, IsMobile and 280 or 320, 1, 0),
+		Position = UDim2.new(1, IsMobile and -290 or -340, 0, 0),
+		ZIndex = 2000,
+		Parent = screen,
+	})
+	UI._notifyRoot = notifyRoot
+
+	function UI:Notify(title, message, duration)
+		if self._destroyed then return end
+		local h = IsMobile and 78 or 88
+		local card = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, h),
+			Position = UDim2.new(0, IsMobile and 290 or 340, 0, 14),
+			BackgroundColor3 = Color3.fromRGB(10, 12, 26),
+			BorderSizePixel = 0,
+			ZIndex = 2001,
+			Parent = notifyRoot,
+		})
+		Instance.new("UICorner", card).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(card, Theme.Stroke, 1.1, 0.2)
+		Utils.dropShadow(card, UDim2.new(1, 22, 1, 22), 0.55)
+
+		local grad = Instance.new("UIGradient")
+		grad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Theme.Primary),
+			ColorSequenceKeypoint.new(1, Theme.Success),
+		})
+		grad.Rotation = 2
+		grad.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.65),
+			NumberSequenceKeypoint.new(1, 0.9),
+		})
+		grad.Parent = card
+
+		Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -18, 0, IsMobile and 22 or 24),
+			Position = UDim2.new(0, 9, 0, IsMobile and 6 or 8),
+			Font = Enum.Font.GothamBold,
+			TextSize = IsMobile and 13 or 15,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = tostring(title or "Info"),
+			TextColor3 = Theme.Primary,
+			ZIndex = 2002,
+			Parent = card,
+		})
+
+		Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -18, 0, IsMobile and 40 or 42),
+			Position = UDim2.new(0, 9, 0, IsMobile and 28 or 32),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Text = tostring(message or ""),
+			TextColor3 = Theme.TextSub,
+			ZIndex = 2002,
+			Parent = card,
+		})
+
+		Utils.tween(card, 0.25, { Position = UDim2.new(0, 0, 0, 14) })
+		task.delay(duration or 3, function()
+			if card and card.Parent then
+				Utils.tween(card, 0.25, { Position = UDim2.new(0, IsMobile and 290 or 340, 0, 14) })
+				task.wait(0.25)
+				if card and card.Parent then card:Destroy() end
+			end
+		end)
+	end
+
+	-- ===== Loading screen
+	local loaderFrame, loaderTitleLabel, loaderSubtitleLabel
+	if EnableLoading then
+		loaderFrame = Utils.new("Frame", {
+			Name = "LapoUI_Loading",
+			Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0),
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ZIndex = 9000,
+			Parent = screen,
+			ClipsDescendants = true,
+		})
+
+		local blurLayer = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0),
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundTransparency = 0.3,
+			BorderSizePixel = 0,
+			ZIndex = 9001,
+			Parent = loaderFrame,
+		})
+
+		local loaderBg = Utils.new("ImageLabel", {
+			Name = "Background",
+			Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Image = LoadingImage or "",
+			ScaleType = Enum.ScaleType.Crop,
+			ImageColor3 = Color3.new(1, 1, 1),
+			ImageTransparency = 1,
+			ZIndex = 9000,
+			Parent = loaderFrame,
+		})
+
+		local center = Utils.new("Frame", {
+			Size = UDim2.new(0, 340, 0, 150),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			BackgroundColor3 = Color3.fromRGB(10, 12, 24),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ZIndex = 9002,
+			Parent = loaderFrame,
+		})
+		Instance.new("UICorner", center).CornerRadius = UDim.new(0, 16)
+		Utils.uiStroke(center, Theme.Stroke, 1.5, 0.1)
+		Utils.dropShadow(center, UDim2.new(1, 26, 1, 26), 0.6)
+
+		local centerGrad = Instance.new("UIGradient")
+		centerGrad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Theme.Primary),
+			ColorSequenceKeypoint.new(1, Theme.Success),
+		})
+		centerGrad.Rotation = 35
+		centerGrad.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.6),
+			NumberSequenceKeypoint.new(1, 0.85),
+		})
+		centerGrad.Parent = center
+
+		local spinnerHolder = Utils.new("Frame", {
+			Size = UDim2.new(0, 36, 0, 36),
+			Position = UDim2.new(0, 22, 0, 22),
+			BackgroundTransparency = 1,
+			ZIndex = 9003,
+			Parent = center,
+		})
+
+		local spinner = Utils.new("ImageLabel", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			Size = UDim2.new(1, 0, 1, 0),
+			BackgroundTransparency = 1,
+			Image = "rbxassetid://10723417838",
+			ImageColor3 = Theme.Primary,
+			ImageTransparency = 0,
+			ZIndex = 9003,
+			Parent = spinnerHolder,
+		})
+
+		task.spawn(function()
+			while spinner and spinner.Parent do
+				spinner.Rotation = (spinner.Rotation + 180 * RunService.Heartbeat:Wait()) % 360
+			end
+		end)
+
+		loaderTitleLabel = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -90, 0, 34),
+			Position = UDim2.new(0, 70, 0, 20),
+			Font = Enum.Font.GothamBold,
+			TextSize = 20,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Text = tostring(LoadingTitle),
+			TextColor3 = Theme.TextMain,
+			TextTransparency = 1,
+			ZIndex = 9004,
+			Parent = center,
+		})
+
+		loaderSubtitleLabel = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -90, 0, 60),
+			Position = UDim2.new(0, 70, 0, 52),
+			Font = Enum.Font.Gotham,
+			TextSize = 13,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Text = tostring(LoadingSubtitle),
+			TextColor3 = Theme.TextSub,
+			TextTransparency = 1,
+			ZIndex = 9004,
+			Parent = center,
+		})
+
+		Utils.tween(loaderFrame, 0.35, { BackgroundTransparency = 0 })
+		Utils.tween(blurLayer, 0.5, { BackgroundTransparency = 0.25 })
+		if LoadingImage then
+			Utils.tween(loaderBg, 0.6, { ImageTransparency = 0.2 })
+		end
+		Utils.tween(center, 0.5, { BackgroundTransparency = 0 })
+		Utils.tween(loaderTitleLabel, 0.6, { TextTransparency = 0 })
+		Utils.tween(loaderSubtitleLabel, 0.6, { TextTransparency = 0.1 })
+	end
+
+	-- ===== Main container
+	local Main = Utils.new("Frame", {
+		Name = "Main",
+		Size = UDim2.new(0, Width, 0, Height),
+		Position = UDim2.new(0.5, -Width / 2, 0.5, -Height / 2),
+		BackgroundColor3 = Theme.Panel,
+		BackgroundTransparency = 0.04,
+		BorderSizePixel = 0,
+		Active = true,
+		Draggable = not IsMobile,
+		ClipsDescendants = false,
+		ZIndex = 1,
+		Parent = screen,
+		Visible = not EnableLoading,
+	})
+	UI._main = Main
+
+	Instance.new("UICorner", Main).CornerRadius = UDim.new(0, Theme.CornerD)
+	Utils.uiStroke(Main, Theme.Stroke, 1.2, 0.16)
+	Utils.dropShadow(Main, UDim2.new(1, 46, 1, 46), 0.55)
+
+	UI:_regTheme(Main, "BackgroundColor3", "Panel")
+
+	local mainGrad = Instance.new("UIGradient")
+	mainGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(18, 20, 40)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(8, 10, 20)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(4, 6, 16)),
+	})
+	mainGrad.Rotation = 90
+	mainGrad.Parent = Main
+
+	-- ===== Header
+	local HeaderH = IsMobile and 42 or 52
+	local Header = Utils.new("Frame", {
+		Size = UDim2.new(1, 0, 0, HeaderH),
+		BackgroundColor3 = Theme.Header,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = Main,
+	})
+	UI:_regTheme(Header, "BackgroundColor3", "Header")
+
+	Instance.new("UICorner", Header).CornerRadius = UDim.new(0, Theme.CornerD)
+	Header.Active = true
+
+	local headerGrad = Instance.new("UIGradient")
+	headerGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Theme.Primary),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 230, 255)),
+	})
+	headerGrad.Rotation = 25
+	headerGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.7),
+		NumberSequenceKeypoint.new(1, 0.9),
+	})
+	headerGrad.Parent = Header
+
+	local titleLabel = Utils.new("TextLabel", {
+		BackgroundTransparency = 1,
+		Position = UDim2.new(0, IsMobile and 12 or 16, 0, 0),
+		Size = UDim2.new(1, -120, 0, IsMobile and 20 or 26),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.GothamBold,
+		TextSize = IsMobile and 14 or 18,
+		Text = tostring(Title),
+		TextColor3 = Theme.TextMain,
+		ZIndex = 3,
+		Parent = Header,
+	})
+	UI:_regTheme(titleLabel, "TextColor3", "TextMain")
+
+	local subtitleLabel = Utils.new("TextLabel", {
+		BackgroundTransparency = 1,
+		Position = UDim2.new(0, IsMobile and 12 or 16, 0, IsMobile and 20 or 30),
+		Size = UDim2.new(1, -120, 0, IsMobile and 14 or 16),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.Gotham,
+		TextSize = IsMobile and 10 or 12,
+		Text = tostring(HeaderSubtitle),
+		TextColor3 = Theme.TextSub,
+		ZIndex = 3,
+		Parent = Header,
+	})
+	UI:_regTheme(subtitleLabel, "TextColor3", "TextSub")
+
+	local CloseButton = Utils.new("TextButton", {
+		Size = UDim2.new(0, IsMobile and 30 or 34, 0, IsMobile and 26 or 30),
+		Position = UDim2.new(1, IsMobile and -38 or -46, 0, IsMobile and 8 or 11),
+		BackgroundColor3 = Theme.Danger,
+		Text = "✕",
+		TextColor3 = Color3.new(1, 1, 1),
+		Font = Enum.Font.GothamBold,
+		TextSize = IsMobile and 14 or 16,
+		AutoButtonColor = false,
+		ZIndex = 3,
+		Parent = Header,
+	})
+	UI:_regTheme(CloseButton, "BackgroundColor3", "Danger")
+
+	local closeCorner = Instance.new("UICorner", CloseButton)
+	closeCorner.CornerRadius = UDim.new(1, 0)
+	Utils.uiStroke(CloseButton, Color3.fromRGB(150, 40, 60), 1, 0.1)
+
+	local closeScale = Instance.new("UIScale")
+	closeScale.Scale = 1
+	closeScale.Parent = CloseButton
+
+	Utils.bind(UI._connections, CloseButton.MouseEnter, function()
+		Utils.tween(closeScale, 0.12, { Scale = 1.05 })
+	end)
+	Utils.bind(UI._connections, CloseButton.MouseLeave, function()
+		Utils.tween(closeScale, 0.12, { Scale = 1 })
+	end)
+	Utils.bind(UI._connections, CloseButton.MouseButton1Click, function()
+		Utils.tween(closeScale, 0.1, { Scale = 0.95 })
+		Utils.tween(CloseButton, 0.12, { BackgroundColor3 = Color3.fromRGB(190, 60, 85) })
+		task.wait(0.08)
+		UI:Destroy()
+	end)
+
+	-- ===== Body (sidebar + content)
+	local Body = Utils.new("Frame", {
+		Name = "Body",
+		Size = UDim2.new(1, -24, 1, -(HeaderH + 24)),
+		Position = UDim2.new(0, 12, 0, HeaderH + 12),
+		BackgroundColor3 = Theme.SidebarBg,
+		BackgroundTransparency = 0.1,
+		BorderSizePixel = 0,
+		ZIndex = 1,
+		Parent = Main,
+	})
+	UI:_regTheme(Body, "BackgroundColor3", "SidebarBg")
+
+	Instance.new("UICorner", Body).CornerRadius = UDim.new(0, Theme.CornerM)
+	Utils.uiStroke(Body, Theme.Stroke, 1, 0.4)
+
+	local bodyPad = Instance.new("UIPadding")
+	bodyPad.PaddingTop = UDim.new(0, 10)
+	bodyPad.PaddingBottom = UDim.new(0, 10)
+	bodyPad.PaddingLeft = UDim.new(0, 10)
+	bodyPad.PaddingRight = UDim.new(0, 10)
+	bodyPad.Parent = Body
+
+	local sidebarW = IsMobile and 110 or 150
+
+	local TabBar = Utils.new("ScrollingFrame", {
+		Name = "TabBar",
+		Size = UDim2.new(0, sidebarW, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+		BackgroundColor3 = Theme.SidebarBg,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = Body,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		ScrollBarThickness = IsMobile and 2 or 3,
+		ClipsDescendants = true,
+	})
+	UI._tabBar = TabBar
+	UI:_regTheme(TabBar, "BackgroundColor3", "SidebarBg")
+
+	Instance.new("UICorner", TabBar).CornerRadius = UDim.new(0, Theme.CornerM)
+
+	local tabPad = Instance.new("UIPadding")
+	tabPad.PaddingTop = UDim.new(0, 6)
+	tabPad.PaddingBottom = UDim.new(0, 6)
+	tabPad.PaddingLeft = UDim.new(0, 6)
+	tabPad.PaddingRight = UDim.new(0, 6)
+	tabPad.Parent = TabBar
+
+	Utils.new("UIListLayout", {
+		Parent = TabBar,
+		FillDirection = Enum.FillDirection.Vertical,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 6),
+		HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	})
+
+	local ContentArea = Utils.new("Frame", {
+		Name = "ContentArea",
+		Size = UDim2.new(1, -(sidebarW + 10), 1, 0),
+		Position = UDim2.new(0, sidebarW + 10, 0, 0),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = Body,
+	})
+	UI._contentArea = ContentArea
+
+	local Overlay = Utils.new("Frame", {
+		Name = "Overlay",
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundTransparency = 1,
+		ZIndex = 1000,
+		ClipsDescendants = false,
+		Parent = Main,
+	})
+	UI._overlay = Overlay
+
+	-- ===== Visibility / Hotkey
+	function UI:SetVisible(b)
+		self._open = not not b
+		Main.Visible = self._open
+		if not self._open then
+			self:_closePopup()
+		end
+	end
+
+	function UI:BindToggleKey(k)
+		Hotkey = k
+	end
+
+	if Hotkey and not IsMobile then
+		Utils.bind(UI._connections, UserInputService.InputBegan, function(i, gp)
+			if UI._destroyed then return end
+			if gp then return end
+			if i.KeyCode == Hotkey then
+				UI:SetVisible(not UI._open)
+			end
+		end)
+	end
+
+	-- ===== Mobile floating button
+	if IsMobile and (MobileFloating ~= false) then
+		local MobileBtn = Utils.new("TextButton", {
+			Name = "MobileToggle",
+			Size = UDim2.new(0, 60, 0, 60),
+			Position = UDim2.new(1, -75, 0, 15),
+			BackgroundColor3 = Theme.Primary,
+			Text = "☰",
+			TextColor3 = Color3.new(1, 1, 1),
+			Font = Enum.Font.GothamBold,
+			TextSize = 24,
+			AutoButtonColor = false,
+			ZIndex = 3000,
+			Active = true,
+			Draggable = true,
+			Parent = screen,
+		})
+		UI:_regTheme(MobileBtn, "BackgroundColor3", "Primary")
+
+		Instance.new("UICorner", MobileBtn).CornerRadius = UDim.new(1, 0)
+		Utils.uiStroke(MobileBtn, Theme.Stroke, 2, 0.1)
+		Utils.dropShadow(MobileBtn, UDim2.new(1, 20, 1, 20), 0.6)
+
+		Utils.bind(UI._connections, MobileBtn.MouseButton1Down, function()
+			Utils.tween(MobileBtn, 0.1, { Size = UDim2.new(0, 56, 0, 56) })
+		end)
+		Utils.bind(UI._connections, MobileBtn.MouseButton1Up, function()
+			Utils.tween(MobileBtn, 0.15, { Size = UDim2.new(0, 60, 0, 60), BackgroundColor3 = Theme.Primary })
+		end)
+		Utils.bind(UI._connections, MobileBtn.MouseButton1Click, function()
+			UI:SetVisible(not UI._open)
+			MobileBtn.Text = UI._open and "✕" or "☰"
+		end)
+
+		Utils.makeDraggable(UI._connections, MobileBtn, MobileBtn)
+		-- Make main draggable only by header (prevents touch scroll conflicts)
+		Utils.makeDraggable(UI._connections, Main, Header)
+
+		if MobileFloating then
+			pcall(function()
+				Main.Position = UDim2.new(1, -Width - 20, 0, 80)
+			end)
+		end
+	else
+		Utils.makeDraggable(UI._connections, Main, Header)
+	end
+
+	-- =========================================================
+	-- Tabs
+	-- =========================================================
+	local function ensureTab(ui, name)
+		name = tostring(name or "Main")
+		if ui._tabs[name] then return ui._tabs[name] end
+
+		local btn = Utils.new("TextButton", {
+			Text = name,
+			Size = UDim2.new(1, -4, 0, IsMobile and 30 or 32),
+			BackgroundColor3 = Theme.ItemBg,
+			TextColor3 = Theme.TextSub,
+			Font = Enum.Font.GothamBold,
+			TextSize = IsMobile and 12 or 13,
+			AutoButtonColor = false,
+			ZIndex = 3,
+			Parent = TabBar,
+		})
+		ui:_regTheme(btn, "TextColor3", "TextSub")
+		ui:_regTheme(btn, "BackgroundColor3", "ItemBg")
+
+		local btnCorner = Instance.new("UICorner", btn)
+		btnCorner.CornerRadius = UDim.new(1, 0)
+		Utils.uiStroke(btn, Theme.Stroke, 1, 0.35)
+
+		local btnScale = Instance.new("UIScale", btn)
+		btnScale.Scale = 1
+
+		local scroller = Utils.new("ScrollingFrame", {
+			Name = "Tab_" .. name,
+			Size = UDim2.new(1, 0, 1, 0),
+			Position = UDim2.new(0, 0, 0, 0),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = IsMobile and 4 or 6,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ClipsDescendants = true,
+			ZIndex = 2,
+			Parent = ContentArea,
+		})
+
+		local layout = Utils.new("UIListLayout", {
+			Parent = scroller,
+			Padding = UDim.new(0, Theme.PadItem),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		})
+		local pad = Instance.new("UIPadding")
+		pad.PaddingTop = UDim.new(0, 6)
+		pad.PaddingBottom = UDim.new(0, 10)
+		pad.PaddingLeft = UDim.new(0, 2)
+		pad.PaddingRight = UDim.new(0, 2)
+		pad.Parent = scroller
+
+		scroller.Visible = false
+
+		local tab = { Name = name, Button = btn, Scroller = scroller, Layout = layout, Components = {} }
+		ui._tabs[name] = tab
+		table.insert(ui._tabOrder, name)
+
+		Utils.bind(ui._connections, btn.MouseEnter, function()
+			if ui._activeTab ~= name then
+				Utils.tween(btn, 0.12, { BackgroundColor3 = Theme.ItemHover })
+			end
+			Utils.tween(btnScale, 0.12, { Scale = 1.05 })
+		end)
+
+		Utils.bind(ui._connections, btn.MouseLeave, function()
+			if ui._activeTab ~= name then
+				Utils.tween(btn, 0.12, { BackgroundColor3 = Theme.ItemBg })
+			end
+			Utils.tween(btnScale, 0.12, { Scale = 1 })
+		end)
+
+		Utils.bind(ui._connections, btn.MouseButton1Click, function()
+			ui:SwitchTab(name)
+		end)
+
+		local API = {}
+		function API:Section(t)           return ui:Section(t, name) end
+		function API:Label(t)             return ui:Label(t, name) end
+		function API:Button(t, cb)        return ui:Button(t, cb, name) end
+		function API:Toggle(t, d, cb)     return ui:Toggle(t, d, cb, name) end
+		function API:Dropdown(l, o, d,cb) return ui:Dropdown(l, o, d, cb, name) end
+		function API:Textbox(l,p,d,oc,os) return ui:Textbox(l, p, d, oc, os, name) end
+		function API:Slider(l,a,b,d,s,cb) return ui:Slider(l, a, b, d, s, cb, name) end
+		function API:ProgressBar(l,a,b,d) return ui:ProgressBar(l, a, b, d, name) end
+		function API:ColorPicker(l,c,cb)  return ui:ColorPicker(l, c, cb, name) end
+		function API:KeyBind(l,k,cb)      return ui:KeyBind(l, k, cb, name) end
+		tab.API = API
+
+		return tab
+	end
+
+	function UI:_resolveTab(target)
+		if type(target) == "string" then
+			return ensureTab(self, target)
+		elseif type(target) == "table" and target.Name and self._tabs[target.Name] then
+			return self._tabs[target.Name]
+		elseif self._activeTab then
+			return self._tabs[self._activeTab]
+		end
+		return ensureTab(self, "Main")
+	end
+
+	function UI:CreateTab(name)
+		local t = ensureTab(self, name)
+		if not self._activeTab then
+			self:SwitchTab(name)
+		end
+		return t.API
+	end
+
+	function UI:SwitchTab(name)
+		for _, nm in ipairs(self._tabOrder) do
+			local t = self._tabs[nm]
+			t.Scroller.Visible = (nm == name)
+			if nm == name then
+				t.Button.TextColor3 = Theme.TextMain
+				Utils.tween(t.Button, 0.12, { BackgroundColor3 = Theme.ItemActive })
+			else
+				t.Button.TextColor3 = Theme.TextSub
+				Utils.tween(t.Button, 0.12, { BackgroundColor3 = Theme.ItemBg })
+			end
+		end
+		self._activeTab = name
+		self:_closePopup()
+	end
+
+	-- =========================================================
+	-- Components implementations
+	-- =========================================================
+
+	-- Section
+	function UI:Section(title, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local frame = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 30 or 34),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", frame).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(frame, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, frame)
+		self:_regTheme(frame, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, IsMobile and -20 or -28, 1, 0),
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextSize = IsMobile and 12 or 15,
+			TextColor3 = Theme.Primary,
+			Text = tostring(title or ""),
+			ZIndex = 3,
+			Parent = frame,
+		})
+		self:_regTheme(lbl, "TextColor3", "Primary")
+		return frame
+	end
+
+	-- Label
+	function UI:Label(text, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 36 or 40),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, -20, 1, 0),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			Text = tostring(text or ""),
+			TextColor3 = Theme.TextMain,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextMain")
+
+		return {
+			SetText = function(_, t) lbl.Text = tostring(t or "") end,
+			GetText = function() return lbl.Text end,
+		}
+	end
+
+	-- Button
+	function UI:Button(text, callback, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local btn = Utils.new("TextButton", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 36 or 40),
+			BackgroundColor3 = Theme.ItemBg,
+			TextColor3 = Theme.TextMain,
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			Text = tostring(text or "Button"),
+			AutoButtonColor = false,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(btn, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, btn)
+		self:_regTheme(btn, "BackgroundColor3", "ItemBg")
+		self:_regTheme(btn, "TextColor3", "TextMain")
+
+		local scale = Instance.new("UIScale", btn)
+		scale.Scale = 1
+
+		Utils.bind(self._connections, btn.MouseEnter, function()
+			Utils.tween(btn, 0.15, { BackgroundColor3 = Theme.ItemHover })
+			Utils.tween(scale, 0.15, { Scale = 1.02 })
+		end)
+		Utils.bind(self._connections, btn.MouseLeave, function()
+			Utils.tween(btn, 0.15, { BackgroundColor3 = Theme.ItemBg })
+			Utils.tween(scale, 0.15, { Scale = 1 })
+		end)
+		Utils.bind(self._connections, btn.MouseButton1Click, function()
+			Utils.tween(btn, 0.08, { BackgroundColor3 = Theme.ItemActive })
+			Utils.tween(scale, 0.08, { Scale = 0.98 })
+			task.wait(0.06)
+			Utils.tween(btn, 0.16, { BackgroundColor3 = Theme.ItemHover })
+			Utils.tween(scale, 0.16, { Scale = 1.02 })
+			Utils.safeCall(callback)
+		end)
+
+		return btn
+	end
+
+	-- Toggle
+	function UI:Toggle(text, default, callback, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local container = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 38 or 42),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", container).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(container, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, container)
+		self:_regTheme(container, "BackgroundColor3", "ItemBg")
+
+		local txt = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, -60, 1, 0),
+			Text = tostring(text or "Toggle"),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			TextColor3 = Theme.TextMain,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = container,
+		})
+		self:_regTheme(txt, "TextColor3", "TextMain")
+
+		local w = IsMobile and 40 or 46
+		local h = IsMobile and 22 or 24
+		local c = IsMobile and 18 or 20
+
+		local knob = Utils.new("TextButton", {
+			Size = UDim2.new(0, w, 0, h),
+			Position = UDim2.new(1, -(w + (IsMobile and 10 or 14)), 0.5, -h / 2),
+			BackgroundColor3 = default and Theme.Success or Theme.Danger,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 3,
+			Parent = container,
+		})
+		Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+		Utils.uiStroke(knob, Theme.Stroke, 1, 0.2)
+
+		local circle = Utils.new("Frame", {
+			Size = UDim2.new(0, c, 0, c),
+			Position = UDim2.new(0, 2, 0.5, -c / 2),
+			BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+			ZIndex = 4,
+			Parent = knob,
+		})
+		Instance.new("UICorner", circle).CornerRadius = UDim.new(1, 0)
+
+		local state = not not default
+		local function upd(animate)
+			if state then
+				if animate then
+					Utils.tween(knob, 0.15, { BackgroundColor3 = Theme.Success })
+					Utils.tween(circle, 0.15, { Position = UDim2.new(1, -(c + 2), 0.5, -c / 2) })
+				else
+					knob.BackgroundColor3 = Theme.Success
+					circle.Position = UDim2.new(1, -(c + 2), 0.5, -c / 2)
+				end
+			else
+				if animate then
+					Utils.tween(knob, 0.15, { BackgroundColor3 = Theme.Danger })
+					Utils.tween(circle, 0.15, { Position = UDim2.new(0, 2, 0.5, -c / 2) })
+				else
+					knob.BackgroundColor3 = Theme.Danger
+					circle.Position = UDim2.new(0, 2, 0.5, -c / 2)
+				end
+			end
+		end
+		upd(false)
+
+		Utils.bind(self._connections, knob.MouseButton1Click, function()
+			state = not state
+			upd(true)
+			Utils.safeCall(callback, state)
+		end)
+
+		return {
+			Get = function() return state end,
+			Set = function(_, v, silent)
+				state = not not v
+				upd(true)
+				if not silent then
+					Utils.safeCall(callback, state)
+				end
+			end,
+		}
+	end
+
+	-- Dropdown (optimized: RenderStepped only while open)
+	function UI:Dropdown(labelText, options, default, onSelect, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		options = type(options) == "table" and options or { "Nenhuma" }
+		if #options == 0 then options = { "Nenhuma" } end
+
+		local current = default or options[1]
+		if not table.find(options, current) then current = options[1] end
+
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 42 or 48),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.18)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 8 or 12, 0, 0),
+			Size = UDim2.new(0.44, -(IsMobile and 8 or 12), 1, 0),
+			Text = tostring(labelText or "Dropdown"),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 14,
+			TextColor3 = Theme.TextSub,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextSub")
+
+		local bh = IsMobile and 32 or 36
+		local button = Utils.new("TextButton", {
+			Name = "DropdownButton",
+			Size = UDim2.new(0.56, -(IsMobile and 12 or 20), 0, bh),
+			Position = UDim2.new(0.44, IsMobile and 6 or 10, 0.5, -bh / 2),
+			BackgroundColor3 = Theme.ItemHover,
+			Text = tostring(current),
+			TextColor3 = Theme.TextMain,
+			TextSize = IsMobile and 11 or 13,
+			Font = Enum.Font.Gotham,
+			AutoButtonColor = false,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", button).CornerRadius = UDim.new(0, IsMobile and 6 or 8)
+		Utils.uiStroke(button, Theme.Stroke, 1, 0.2)
+		self:_regTheme(button, "TextColor3", "TextMain")
+
+		local listW = IsMobile and (Width - 40) or 260
+		local list = Utils.new("ScrollingFrame", {
+			Name = (labelText or "Dropdown") .. "_List",
+			Visible = false,
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			Size = UDim2.new(0, listW, 0, 0),
+			ZIndex = 4001,
+			ScrollBarThickness = IsMobile and 4 or 6,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ClipsDescendants = true,
+			Active = true,
+			Parent = screen,
+		})
+		Instance.new("UICorner", list).CornerRadius = UDim.new(0, IsMobile and 6 or 8)
+		Utils.uiStroke(list, Theme.Stroke, 1.5, 0.1)
+		self:_regTheme(list, "BackgroundColor3", "ItemBg")
+
+		Utils.new("UIListLayout", {
+			Parent = list,
+			Padding = UDim.new(0, IsMobile and 3 or 4),
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+		})
+		local pad = Instance.new("UIPadding", list)
+		pad.PaddingTop = UDim.new(0, IsMobile and 3 or 4)
+		pad.PaddingBottom = pad.PaddingTop
+		pad.PaddingLeft = pad.PaddingTop
+		pad.PaddingRight = pad.PaddingTop
+
+		local optH = IsMobile and 28 or 32
+		local optButtons = {}
+		local selectedIndex = 1
+
+		local function place()
+			local bp = button.AbsolutePosition
+			local bs = button.AbsoluteSize
+			local cam = Workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+			local x = math.clamp(bp.X + bs.X / 2 - list.AbsoluteSize.X / 2, 8, math.max(vp.X - list.AbsoluteSize.X - 8, 8))
+			local y = bp.Y + bs.Y + 4
+			if (y + list.AbsoluteSize.Y) > (vp.Y - 8) then
+				y = bp.Y - list.AbsoluteSize.Y - 4
+			end
+			list.Position = UDim2.fromOffset(x, y)
+		end
+
+		local function setSelectedIndex(idx, center)
+			idx = math.clamp(idx, 1, #optButtons)
+			selectedIndex = idx
+			for i, b in ipairs(optButtons) do
+				b.BackgroundColor3 = (i == selectedIndex) and Theme.ItemHover or Theme.ItemBg
+			end
+			if center and list.AbsoluteCanvasSize.Y > list.AbsoluteSize.Y then
+				local y = (optH + (IsMobile and 3 or 4)) * (selectedIndex - 1)
+				list.CanvasPosition = Vector2.new(0, math.clamp(y - (list.AbsoluteSize.Y / 2 - optH), 0, list.AbsoluteCanvasSize.Y))
+			end
+		end
+
+		local function rebuild(opts)
+			for _, c in ipairs(list:GetChildren()) do
+				if c:IsA("TextButton") then c:Destroy() end
+			end
+			table.clear(optButtons)
+			selectedIndex = 1
+
+			local count = 0
+			for i, t in ipairs(opts) do
+				count += 1
+				local isSel = (t == current)
+				if isSel then selectedIndex = i end
+
+				local opt = Utils.new("TextButton", {
+					Size = UDim2.new(1, -6, 0, optH),
+					BackgroundColor3 = isSel and Theme.ItemHover or Theme.ItemBg,
+					Text = tostring(t),
+					TextColor3 = Theme.TextMain,
+					TextSize = IsMobile and 11 or 12,
+					Font = Enum.Font.Gotham,
+					AutoButtonColor = false,
+					ZIndex = 4002,
+					Parent = list,
+				})
+				Instance.new("UICorner", opt).CornerRadius = UDim.new(0, IsMobile and 5 or 6)
+				Utils.uiStroke(opt, Theme.Stroke, 1, 0.18)
+				table.insert(optButtons, opt)
+
+				Utils.bind(UI._connections, opt.MouseEnter, function()
+					opt.BackgroundColor3 = Theme.ItemHover
+				end)
+				Utils.bind(UI._connections, opt.MouseLeave, function()
+					opt.BackgroundColor3 = (i == selectedIndex) and Theme.ItemHover or Theme.ItemBg
+				end)
+				Utils.bind(UI._connections, opt.MouseButton1Click, function()
+					current = t
+					button.Text = tostring(t)
+					UI:_closePopup()
+					Utils.safeCall(onSelect, t)
+				end)
+			end
+
+			local contentH = (count * (optH + (IsMobile and 3 or 4))) + (IsMobile and 6 or 8) * 2
+			list.Size = UDim2.new(0, listW, 0, math.clamp(contentH, 40, IsMobile and 160 or 200))
+			setSelectedIndex(selectedIndex, true)
+		end
+
+		rebuild(options)
+
+		Utils.bind(self._connections, button.MouseButton1Click, function()
+			if UI._openOverlay and UI._openOverlay ~= list then
+				UI:_closePopup()
+			end
+			place()
+			UI:_openPopup(list)
+
+			-- keyboard navigation while open
+			Utils.bind(UI._popupConns, UserInputService.InputBegan, function(i, gp)
+				if gp then return end
+				if not list.Visible then return end
+				if i.KeyCode == Enum.KeyCode.Up then
+					setSelectedIndex(selectedIndex - 1, true)
+				elseif i.KeyCode == Enum.KeyCode.Down then
+					setSelectedIndex(selectedIndex + 1, true)
+				elseif i.KeyCode == Enum.KeyCode.Return or i.KeyCode == Enum.KeyCode.KeypadEnter then
+					local btnSel = optButtons[selectedIndex]
+					if btnSel then btnSel:Activate() end
+				end
+			end)
+
+			-- reposition only while open (mobile friendly)
+			Utils.bind(UI._popupConns, RunService.RenderStepped, function()
+				if list.Visible then place() end
+			end)
+		end)
+
+		return {
+			SetOptions = function(_, opts)
+				options = type(opts) == "table" and opts or { "Nenhuma" }
+				if #options == 0 then options = { "Nenhuma" } end
+				if not table.find(options, current) then
+					current = options[1]
+					button.Text = tostring(current)
+				end
+				rebuild(options)
+			end,
+			SetSelected = function(_, v, silent)
+				local idx = table.find(options, v)
+				if idx then
+					current = v
+					button.Text = tostring(v)
+					setSelectedIndex(idx, true)
+					if not silent then
+						Utils.safeCall(onSelect, v)
+					end
+				end
+			end,
+			GetSelected = function()
+				return current
+			end,
+		}
+	end
+
+	-- Textbox
+	function UI:Textbox(labelText, placeholder, defaultText, onChanged, onSubmitted, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 46 or 50),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(0.45, -(IsMobile and 10 or 14), 1, 0),
+			Text = tostring(labelText or "Input"),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			TextColor3 = Theme.TextSub,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextSub")
+
+		local h = IsMobile and 32 or 34
+		local box = Utils.new("TextBox", {
+			Size = UDim2.new(0.55, -(IsMobile and 12 or 18), 0, h),
+			Position = UDim2.new(0.45, IsMobile and 6 or 10, 0.5, -h / 2),
+			BackgroundColor3 = Theme.ItemHover,
+			PlaceholderText = tostring(placeholder or ""),
+			Text = tostring(defaultText or ""),
+			TextColor3 = Theme.TextMain,
+			PlaceholderColor3 = Theme.TextSub,
+			TextSize = IsMobile and 11 or 13,
+			Font = Enum.Font.Gotham,
+			ClearTextOnFocus = false,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", box).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
+		Utils.uiStroke(box, Theme.Stroke, 1, 0.25)
+		self:_regTheme(box, "TextColor3", "TextMain")
+		self:_regTheme(box, "PlaceholderColor3", "TextSub")
+
+		Utils.bind(self._connections, box:GetPropertyChangedSignal("Text"), function()
+			Utils.safeCall(onChanged, box.Text)
+		end)
+
+		Utils.bind(self._connections, box.FocusLost, function(enter)
+			if enter then
+				Utils.safeCall(onSubmitted, box.Text)
+			end
+		end)
+
+		return {
+			SetText = function(_, t) box.Text = tostring(t or "") end,
+			GetText = function() return box.Text end,
+		}
+	end
+
+	-- Slider (optimized: per-drag connection, no global InputChanged)
+	function UI:Slider(labelText, min, max, default, step, callback, tabTarget)
+		min = tonumber(min) or 0
+		max = tonumber(max) or 100
+		if max < min then min, max = max, min end
+		step = tonumber(step) or 1
+
+		local value = math.clamp(tonumber(default) or min, min, max)
+		local tab = self:_resolveTab(tabTarget)
+
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 56 or 60),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, -20, 0, IsMobile and 18 or 20),
+			Text = tostring(labelText or "Slider"),
+			Font = Enum.Font.GothamBold,
+			TextSize = IsMobile and 11 or 13,
+			TextColor3 = Theme.TextMain,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextMain")
+
+		local bar = Utils.new("Frame", {
+			Size = UDim2.new(1, -(IsMobile and 20 or 24), 0, IsMobile and 8 or 10),
+			Position = UDim2.new(0, IsMobile and 10 or 14, 1, -(IsMobile and 18 or 20)),
+			BackgroundColor3 = Theme.ItemHover,
+			BorderSizePixel = 0,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+		Utils.uiStroke(bar, Theme.Stroke, 1, 0.2)
+
+		local function ratio(v)
+			if max == min then return 0 end
+			return (v - min) / (max - min)
+		end
+
+		local fill = Utils.new("Frame", {
+			Size = UDim2.new(ratio(value), 0, 1, 0),
+			BackgroundColor3 = Theme.Primary,
+			BorderSizePixel = 0,
+			ZIndex = 4,
+			Parent = bar,
+		})
+		Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+		self:_regTheme(fill, "BackgroundColor3", "Primary")
+
+		local knob = Utils.new("Frame", {
+			Size = UDim2.new(0, IsMobile and 14 or 16, 0, IsMobile and 14 or 16),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(ratio(value), 0, 0.5, 0),
+			BackgroundColor3 = Theme.TextMain,
+			ZIndex = 5,
+			Parent = bar,
+		})
+		Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+		self:_regTheme(knob, "BackgroundColor3", "TextMain")
+
+		local valText = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 60, 0, IsMobile and 16 or 18),
+			Position = UDim2.new(1, -60, 0, 0),
+			Text = tostring(value),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 10 or 12,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			TextColor3 = Theme.TextSub,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(valText, "TextColor3", "TextSub")
+
+		local function snap(n)
+			return math.clamp(min + math.floor((n - min) / step + 0.5) * step, min, max)
+		end
+
+		local function toVal(screenX)
+			local a = bar.AbsolutePosition.X
+			local b = bar.AbsoluteSize.X
+			if b <= 0 then return value end
+			local p = math.clamp((screenX - a) / b, 0, 1)
+			return snap(min + p * (max - min))
+		end
+
+		local function setValue(v, silent)
+			value = math.clamp(snap(tonumber(v) or value), min, max)
+			local r = ratio(value)
+			fill.Size = UDim2.new(r, 0, 1, 0)
+			knob.Position = UDim2.new(r, 0, 0.5, 0)
+			valText.Text = tostring(value)
+			if not silent then
+				Utils.safeCall(callback, value)
+			end
+		end
+
+		local dragConn
+		local endConn
+		local dragging = false
+
+		local function stopDrag()
+			dragging = false
+			if dragConn then dragConn:Disconnect() dragConn = nil end
+			if endConn then endConn:Disconnect() endConn = nil end
+		end
+
+		Utils.bind(self._connections, bar.InputBegan, function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				setValue(toVal(UserInputService:GetMouseLocation().X))
+
+				stopDrag()
+				dragging = true
+
+				dragConn = UserInputService.InputChanged:Connect(function(ch)
+					if not dragging then return end
+					if ch.UserInputType == Enum.UserInputType.MouseMovement or ch.UserInputType == Enum.UserInputType.Touch then
+						setValue(toVal(UserInputService:GetMouseLocation().X))
+					end
+				end)
+
+				endConn = UserInputService.InputEnded:Connect(function(ended)
+					if ended.UserInputType == Enum.UserInputType.MouseButton1 or ended.UserInputType == Enum.UserInputType.Touch then
+						stopDrag()
+					end
+				end)
+
+				table.insert(self._connections, dragConn)
+				table.insert(self._connections, endConn)
+			end
+		end)
+
+		return {
+			Get = function() return value end,
+			Set = function(_, v, silent) setValue(v, silent) end,
+		}
+	end
+
+	-- ProgressBar
+	function UI:ProgressBar(labelText, min, max, default, tabTarget)
+		min = tonumber(min) or 0
+		max = tonumber(max) or 100
+		if max < min then min, max = max, min end
+		local value = math.clamp(tonumber(default) or min, min, max)
+
+		local tab = self:_resolveTab(tabTarget)
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 52 or 56),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, -20, 0, IsMobile and 18 or 20),
+			Text = tostring(labelText or "Progresso"),
+			Font = Enum.Font.GothamBold,
+			TextSize = IsMobile and 11 or 13,
+			TextColor3 = Theme.TextMain,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextMain")
+
+		local bar = Utils.new("Frame", {
+			Size = UDim2.new(1, -(IsMobile and 20 or 24), 0, IsMobile and 8 or 10),
+			Position = UDim2.new(0, IsMobile and 10 or 14, 1, -(IsMobile and 18 or 20)),
+			BackgroundColor3 = Theme.ItemHover,
+			BorderSizePixel = 0,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+
+		local function ratio(v)
+			if max == min then return 0 end
+			return (v - min) / (max - min)
+		end
+
+		local fill = Utils.new("Frame", {
+			Size = UDim2.new(ratio(value), 0, 1, 0),
+			BackgroundColor3 = Theme.Primary,
+			BorderSizePixel = 0,
+			ZIndex = 4,
+			Parent = bar,
+		})
+		Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+		self:_regTheme(fill, "BackgroundColor3", "Primary")
+
+		return {
+			Get = function() return value end,
+			Set = function(_, v)
+				value = math.clamp(tonumber(v) or value, min, max)
+				fill:TweenSize(UDim2.new(ratio(value), 0, 1, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.18, true)
+			end,
+			SetRange = function(_, a, b)
+				min = tonumber(a) or min
+				max = tonumber(b) or max
+				if max < min then min, max = max, min end
+				value = math.clamp(value, min, max)
+				fill.Size = UDim2.new(ratio(value), 0, 1, 0)
+			end,
+		}
+	end
+
+	-- ColorPicker (popup + reposition only while open)
+	function UI:ColorPicker(labelText, defaultColor, callback, tabTarget)
+		defaultColor = defaultColor or Theme.Primary
+		local tab = self:_resolveTab(tabTarget)
+
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 64 or 72),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(1, -20, 0, IsMobile and 18 or 20),
+			Text = tostring(labelText or "Color"),
+			Font = Enum.Font.GothamBold,
+			TextSize = IsMobile and 11 or 13,
+			TextColor3 = Theme.TextMain,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextMain")
+
+		local preview = Utils.new("TextButton", {
+			Size = UDim2.new(0, IsMobile and 42 or 50, 0, IsMobile and 30 or 34),
+			Position = UDim2.new(1, -(IsMobile and 56 or 70), 0.5, -((IsMobile and 30 or 34) / 2)),
+			BackgroundColor3 = defaultColor,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", preview).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
+		Utils.uiStroke(preview, Theme.Stroke, 1, 0.2)
+
+		local pal = Utils.new("Frame", {
+			Visible = false,
+			Size = UDim2.new(0, IsMobile and 220 or 260, 0, IsMobile and 160 or 180),
+			BackgroundColor3 = Theme.Panel,
+			ZIndex = 4001,
+			Parent = screen,
+		})
+		Instance.new("UICorner", pal).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(pal, Theme.Stroke, 1.5, 0.1)
+		Utils.dropShadow(pal, UDim2.new(1, 16, 1, 16), 0.55)
+		self:_regTheme(pal, "BackgroundColor3", "Panel")
+
+		Utils.new("UIGridLayout", {
+			Parent = pal,
+			CellSize = UDim2.new(0, 36, 0, 28),
+			CellPadding = UDim2.new(0, 8, 0, 8),
+		})
+		local palPad = Instance.new("UIPadding", pal)
+		palPad.PaddingTop = UDim.new(0, 10)
+		palPad.PaddingBottom = UDim.new(0, 10)
+		palPad.PaddingLeft = UDim.new(0, 10)
+		palPad.PaddingRight = UDim.new(0, 10)
+
+		local palette = {
+			Color3.fromRGB(255, 255, 255),
+			Color3.fromRGB(240, 240, 245),
+			Color3.fromRGB(220, 220, 230),
+			Color3.fromRGB(200, 200, 210),
+			Color3.fromRGB(180, 200, 255),
+			Color3.fromRGB(140, 170, 255),
+			Color3.fromRGB(100, 140, 255),
+			Color3.fromRGB(80, 120, 220),
+			Color3.fromRGB(60, 200, 90),
+			Color3.fromRGB(225, 70, 70),
+			Color3.fromRGB(255, 180, 60),
+			Theme.Primary,
+		}
+
+		for _, c in ipairs(palette) do
+			local sw = Utils.new("TextButton", {
+				Size = UDim2.new(0, 36, 0, 28),
+				BackgroundColor3 = c,
+				AutoButtonColor = false,
+				ZIndex = 4002,
+				Parent = pal,
+			})
+			Instance.new("UICorner", sw).CornerRadius = UDim.new(0, 6)
+			Utils.bind(self._connections, sw.MouseButton1Click, function()
+				preview.BackgroundColor3 = c
+				UI:_closePopup()
+				Utils.safeCall(callback, c)
+			end)
+		end
+
+		local function place()
+			local p = preview.AbsolutePosition
+			local size = preview.AbsoluteSize
+			local cam = Workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+			local x = math.clamp(p.X, 8, vp.X - pal.AbsoluteSize.X - 8)
+			local y = p.Y + size.Y + 8
+			if y + pal.AbsoluteSize.Y > vp.Y - 8 then
+				y = p.Y - pal.AbsoluteSize.Y - 8
+			end
+			pal.Position = UDim2.fromOffset(x, y)
+		end
+
+		Utils.bind(self._connections, preview.MouseButton1Click, function()
+			place()
+			UI:_openPopup(pal)
+			Utils.bind(UI._popupConns, RunService.RenderStepped, function()
+				if pal.Visible then place() end
+			end)
+		end)
+
+		return {
+			SetColor = function(_, c, silent)
+				if typeof(c) == "Color3" then
+					preview.BackgroundColor3 = c
+					if not silent then
+						Utils.safeCall(callback, c)
+					end
+				end
+			end,
+			GetColor = function()
+				return preview.BackgroundColor3
+			end,
+		}
+	end
+
+	-- KeyBind
+	function UI:KeyBind(labelText, defaultKey, callback, tabTarget)
+		local tab = self:_resolveTab(tabTarget)
+		local holder = Utils.new("Frame", {
+			Size = UDim2.new(1, 0, 0, IsMobile and 46 or 50),
+			BackgroundColor3 = Theme.ItemBg,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		})
+		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
+		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		tabAdd(tab, holder)
+		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
+
+		local lbl = Utils.new("TextLabel", {
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, IsMobile and 10 or 14, 0, 0),
+			Size = UDim2.new(0.6, -12, 1, 0),
+			Font = Enum.Font.Gotham,
+			TextSize = IsMobile and 11 or 13,
+			Text = tostring(labelText or "KeyBind"),
+			TextColor3 = Theme.TextSub,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		self:_regTheme(lbl, "TextColor3", "TextSub")
+
+		local function keyToText(k)
+			if typeof(k) == "EnumItem" then return k.Name end
+			return tostring(k or "None")
+		end
+
+		local btn = Utils.new("TextButton", {
+			Size = UDim2.new(0, IsMobile and 96 or 110, 0, IsMobile and 30 or 32),
+			Position = UDim2.new(1, -(IsMobile and 112 or 130), 0.5, -((IsMobile and 30 or 32) / 2)),
+			BackgroundColor3 = Theme.ItemHover,
+			Text = keyToText(defaultKey),
+			AutoButtonColor = false,
+			ZIndex = 3,
+			Parent = holder,
+		})
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
+		Utils.uiStroke(btn, Theme.Stroke, 1, 0.25)
+		self:_regTheme(btn, "TextColor3", "TextMain")
+
+		local current = defaultKey
+
+		Utils.bind(self._connections, btn.MouseButton1Click, function()
+			btn.Text = "Pressione..."
+			local conn
+			conn = UserInputService.InputBegan:Connect(function(i, gp)
+				if gp then return end
+
+				if i.UserInputType == Enum.UserInputType.Keyboard then
+					current = i.KeyCode
+					btn.Text = keyToText(current)
+				elseif i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.MouseButton2 then
+					current = i.UserInputType.Name
+					btn.Text = keyToText(current)
+				end
+
+				if conn then conn:Disconnect() end
+				Utils.safeCall(callback, current)
+			end)
+			table.insert(self._connections, conn)
+		end)
+
+		return {
+			Get = function() return current end,
+			Set = function(_, k, silent)
+				current = k
+				btn.Text = keyToText(k)
+				if not silent then
+					Utils.safeCall(callback, current)
+				end
+			end,
+		}
+	end
+
+	-- ===== Destroy
+	function UI:Destroy()
+		if self._destroyed then return end
+		self._destroyed = true
+		self:_closePopup()
+		Utils.cleanup(self._connections)
+		if self._screen and self._screen.Parent then
+			self._screen:Destroy()
+		end
+	end
+
+	-- ===== Welcome + loading integration
+	local platform = IsMobile and "Mobile" or (IsTablet and "Tablet" or "Desktop")
+
+	if EnableLoading and loaderFrame then
+		task.spawn(function()
+			task.wait(LoadingTime)
+
+			if loaderTitleLabel then Utils.tween(loaderTitleLabel, 0.35, { TextTransparency = 1 }) end
+			if loaderSubtitleLabel then Utils.tween(loaderSubtitleLabel, 0.35, { TextTransparency = 1 }) end
+			task.wait(0.25)
+
+			if loaderFrame then
+				Utils.tween(loaderFrame, 0.45, { BackgroundTransparency = 1 })
+				task.wait(0.45)
+				if loaderFrame.Parent then loaderFrame:Destroy() end
+			end
+
+			Main.Visible = true
+			Main.BackgroundTransparency = 1
+			Utils.tween(Main, 0.45, { BackgroundTransparency = 0.04 })
+
+			UI:Notify(
+				"LapoUI V5.1",
+				("Carregado! Plataforma: %s | Hotkey: %s | Tema: %s"):format(
+					platform,
+					Hotkey and (Hotkey.Name or tostring(Hotkey)) or "Nenhuma",
+					UI._themeName
+				),
+				3
+			)
+		end)
+	else
+		Main.Visible = true
+		UI:Notify(
+			"LapoUI V5.1",
+			("Carregado! Plataforma: %s | Hotkey: %s | Tema: %s"):format(
+				platform,
+				Hotkey and (Hotkey.Name or tostring(Hotkey)) or "Nenhuma",
+				UI._themeName
+			),
+			3
+		)
+	end
+
+	-- ===== Apply initial theme to registry (ensures Theme keys match after cfg.Theme)
+	UI:_applyTheme(false)
+
+	return UI
+end
+
+-- ========================= Export / global
+if getgenv then
+	getgenv().LapoUI = getgenv().LapoUI or LapoUI
+else
+	_G.LapoUI = _G.LapoUI or LapoUI
+end
+
+return LapoUI
