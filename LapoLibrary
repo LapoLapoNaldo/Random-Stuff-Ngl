@@ -358,6 +358,9 @@ function LapoUI.create(cfg)
 		_themed = {},
 		-- hover registry: { {obj=Instance, baseKey="ItemBg", hoverKey="ItemHover", activeKey="ItemActive", isActiveFn=function()->bool } }
 		_hoverables = {},
+		-- gradient refs (updated on theme change)
+		_mainGrad = nil,
+		_headerGrad = nil,
 	}
 	setmetatable(UI, LapoUI)
 
@@ -398,6 +401,21 @@ function LapoUI.create(cfg)
 					end
 				end
 			end
+		end
+
+		-- gradients (ensure theme applies everywhere)
+		if self._mainGrad then
+			self._mainGrad.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, t.Panel),
+				ColorSequenceKeypoint.new(0.5, t.Header),
+				ColorSequenceKeypoint.new(1, t.SidebarBg),
+			})
+		end
+		if self._headerGrad then
+			self._headerGrad.Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, t.Primary),
+				ColorSequenceKeypoint.new(1, t.Success),
+			})
 		end
 	end
 
@@ -493,8 +511,9 @@ function LapoUI.create(cfg)
 			Parent = notifyRoot,
 		})
 		Instance.new("UICorner", card).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(card, Theme.Stroke, 1.1, 0.2)
-		Utils.dropShadow(card, UDim2.new(1, 22, 1, 22), 0.55)
+		local cardStroke = Utils.uiStroke(card, Theme.Stroke, 0.9, 0.35)
+		self:_regTheme(cardStroke, "Color", "Stroke")
+		Utils.dropShadow(card, UDim2.new(1, 14, 1, 14), 0.65)
 
 		local grad = Instance.new("UIGradient")
 		grad.Color = ColorSequence.new({
@@ -596,7 +615,8 @@ function LapoUI.create(cfg)
 			Parent = loaderFrame,
 		})
 		Instance.new("UICorner", center).CornerRadius = UDim.new(0, 16)
-		Utils.uiStroke(center, Theme.Stroke, 1.5, 0.1)
+		local centerStroke = Utils.uiStroke(center, Theme.Stroke, 1.5, 0.1)
+		UI:_regTheme(centerStroke, "Color", "Stroke")
 		Utils.dropShadow(center, UDim2.new(1, 26, 1, 26), 0.6)
 
 		local centerGrad = Instance.new("UIGradient")
@@ -686,7 +706,7 @@ function LapoUI.create(cfg)
 		BackgroundTransparency = 0.04,
 		BorderSizePixel = 0,
 		Active = true,
-		Draggable = not IsMobile,
+		Draggable = false,
 		ClipsDescendants = false,
 		ZIndex = 1,
 		Parent = screen,
@@ -695,19 +715,21 @@ function LapoUI.create(cfg)
 	UI._main = Main
 
 	Instance.new("UICorner", Main).CornerRadius = UDim.new(0, Theme.CornerD)
-	Utils.uiStroke(Main, Theme.Stroke, 1.2, 0.16)
+	local mainStroke = Utils.uiStroke(Main, Theme.Stroke, 1.2, 0.16)
+	UI:_regTheme(mainStroke, "Color", "Stroke")
 	Utils.dropShadow(Main, UDim2.new(1, 46, 1, 46), 0.55)
 
 	UI:_regTheme(Main, "BackgroundColor3", "Panel")
 
 	local mainGrad = Instance.new("UIGradient")
 	mainGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(18, 20, 40)),
-		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(8, 10, 20)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(4, 6, 16)),
+		ColorSequenceKeypoint.new(0, Theme.Panel),
+		ColorSequenceKeypoint.new(0.5, Theme.Header),
+		ColorSequenceKeypoint.new(1, Theme.SidebarBg),
 	})
 	mainGrad.Rotation = 90
 	mainGrad.Parent = Main
+	UI._mainGrad = mainGrad
 
 	-- ===== Header
 	local HeaderH = IsMobile and 42 or 52
@@ -726,7 +748,7 @@ function LapoUI.create(cfg)
 	local headerGrad = Instance.new("UIGradient")
 	headerGrad.Color = ColorSequence.new({
 		ColorSequenceKeypoint.new(0, Theme.Primary),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(120, 230, 255)),
+		ColorSequenceKeypoint.new(1, Theme.Success),
 	})
 	headerGrad.Rotation = 25
 	headerGrad.Transparency = NumberSequence.new({
@@ -734,6 +756,7 @@ function LapoUI.create(cfg)
 		NumberSequenceKeypoint.new(1, 0.9),
 	})
 	headerGrad.Parent = Header
+	UI._headerGrad = headerGrad
 
 	local titleLabel = Utils.new("TextLabel", {
 		BackgroundTransparency = 1,
@@ -779,7 +802,8 @@ function LapoUI.create(cfg)
 
 	local closeCorner = Instance.new("UICorner", CloseButton)
 	closeCorner.CornerRadius = UDim.new(1, 0)
-	Utils.uiStroke(CloseButton, Color3.fromRGB(150, 40, 60), 1, 0.1)
+	local closeStroke = Utils.uiStroke(CloseButton, Theme.Danger, 1, 0.1)
+	UI:_regTheme(closeStroke, "Color", "Danger")
 
 	local closeScale = Instance.new("UIScale")
 	closeScale.Scale = 1
@@ -812,7 +836,8 @@ function LapoUI.create(cfg)
 	UI:_regTheme(Body, "BackgroundColor3", "SidebarBg")
 
 	Instance.new("UICorner", Body).CornerRadius = UDim.new(0, Theme.CornerM)
-	Utils.uiStroke(Body, Theme.Stroke, 1, 0.4)
+	local bodyStroke = Utils.uiStroke(Body, Theme.Stroke, 1, 0.4)
+	UI:_regTheme(bodyStroke, "Color", "Stroke")
 
 	local bodyPad = Instance.new("UIPadding")
 	bodyPad.PaddingTop = UDim.new(0, 10)
@@ -921,7 +946,8 @@ function LapoUI.create(cfg)
 		UI:_regTheme(MobileBtn, "BackgroundColor3", "Primary")
 
 		Instance.new("UICorner", MobileBtn).CornerRadius = UDim.new(1, 0)
-		Utils.uiStroke(MobileBtn, Theme.Stroke, 2, 0.1)
+		local mobileStroke = Utils.uiStroke(MobileBtn, Theme.Stroke, 2, 0.1)
+		UI:_regTheme(mobileStroke, "Color", "Stroke")
 		Utils.dropShadow(MobileBtn, UDim2.new(1, 20, 1, 20), 0.6)
 
 		Utils.bind(UI._connections, MobileBtn.MouseButton1Down, function()
@@ -971,7 +997,8 @@ function LapoUI.create(cfg)
 
 		local btnCorner = Instance.new("UICorner", btn)
 		btnCorner.CornerRadius = UDim.new(1, 0)
-		Utils.uiStroke(btn, Theme.Stroke, 1, 0.35)
+		local btnStroke = Utils.uiStroke(btn, Theme.Stroke, 1, 0.35)
+		ui:_regTheme(btnStroke, "Color", "Stroke")
 
 		local btnScale = Instance.new("UIScale", btn)
 		btnScale.Scale = 1
@@ -1091,7 +1118,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", frame).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(frame, Theme.Stroke, 1, 0.2)
+		local sectionStroke = Utils.uiStroke(frame, Theme.Stroke, 1, 0.2)
+		self:_regTheme(sectionStroke, "Color", "Stroke")
 		tabAdd(tab, frame)
 		self:_regTheme(frame, "BackgroundColor3", "ItemBg")
 
@@ -1121,7 +1149,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local labelStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(labelStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1159,7 +1188,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(btn, Theme.Stroke, 1, 0.2)
+		local btnStroke = Utils.uiStroke(btn, Theme.Stroke, 1, 0.2)
+		self:_regTheme(btnStroke, "Color", "Stroke")
 		tabAdd(tab, btn)
 		self:_regTheme(btn, "BackgroundColor3", "ItemBg")
 		self:_regTheme(btn, "TextColor3", "TextMain")
@@ -1197,7 +1227,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", container).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(container, Theme.Stroke, 1, 0.2)
+		local toggleStroke = Utils.uiStroke(container, Theme.Stroke, 1, 0.2)
+		self:_regTheme(toggleStroke, "Color", "Stroke")
 		tabAdd(tab, container)
 		self:_regTheme(container, "BackgroundColor3", "ItemBg")
 
@@ -1229,7 +1260,8 @@ function LapoUI.create(cfg)
 			Parent = container,
 		})
 		Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
-		Utils.uiStroke(knob, Theme.Stroke, 1, 0.2)
+		local knobStroke = Utils.uiStroke(knob, Theme.Stroke, 1, 0.2)
+		self:_regTheme(knobStroke, "Color", "Stroke")
 
 		local circle = Utils.new("Frame", {
 			Size = UDim2.new(0, c, 0, c),
@@ -1296,7 +1328,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.18)
+		local ddStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.18)
+		self:_regTheme(ddStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1329,7 +1362,8 @@ function LapoUI.create(cfg)
 			Parent = holder,
 		})
 		Instance.new("UICorner", button).CornerRadius = UDim.new(0, IsMobile and 6 or 8)
-		Utils.uiStroke(button, Theme.Stroke, 1, 0.2)
+		local ddBtnStroke = Utils.uiStroke(button, Theme.Stroke, 1, 0.2)
+		self:_regTheme(ddBtnStroke, "Color", "Stroke")
 		self:_regTheme(button, "TextColor3", "TextMain")
 
 		local listW = IsMobile and (Width - 40) or 260
@@ -1348,7 +1382,8 @@ function LapoUI.create(cfg)
 			Parent = screen,
 		})
 		Instance.new("UICorner", list).CornerRadius = UDim.new(0, IsMobile and 6 or 8)
-		Utils.uiStroke(list, Theme.Stroke, 1.5, 0.1)
+		local listStroke = Utils.uiStroke(list, Theme.Stroke, 1.5, 0.1)
+		self:_regTheme(listStroke, "Color", "Stroke")
 		self:_regTheme(list, "BackgroundColor3", "ItemBg")
 
 		Utils.new("UIListLayout", {
@@ -1416,7 +1451,8 @@ function LapoUI.create(cfg)
 					Parent = list,
 				})
 				Instance.new("UICorner", opt).CornerRadius = UDim.new(0, IsMobile and 5 or 6)
-				Utils.uiStroke(opt, Theme.Stroke, 1, 0.18)
+				local optStroke = Utils.uiStroke(opt, Theme.Stroke, 1, 0.18)
+				self:_regTheme(optStroke, "Color", "Stroke")
 				table.insert(optButtons, opt)
 
 				Utils.bind(UI._connections, opt.MouseEnter, function()
@@ -1504,7 +1540,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local tbStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(tbStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1538,7 +1575,8 @@ function LapoUI.create(cfg)
 			Parent = holder,
 		})
 		Instance.new("UICorner", box).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
-		Utils.uiStroke(box, Theme.Stroke, 1, 0.25)
+		local boxStroke = Utils.uiStroke(box, Theme.Stroke, 1, 0.25)
+		self:_regTheme(boxStroke, "Color", "Stroke")
 		self:_regTheme(box, "TextColor3", "TextMain")
 		self:_regTheme(box, "PlaceholderColor3", "TextSub")
 
@@ -1575,7 +1613,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local sliderStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(sliderStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1599,10 +1638,12 @@ function LapoUI.create(cfg)
 			BackgroundColor3 = Theme.ItemHover,
 			BorderSizePixel = 0,
 			ZIndex = 3,
+			Active = true,
 			Parent = holder,
 		})
 		Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
-		Utils.uiStroke(bar, Theme.Stroke, 1, 0.2)
+		local barStroke = Utils.uiStroke(bar, Theme.Stroke, 1, 0.2)
+		self:_regTheme(barStroke, "Color", "Stroke")
 
 		local function ratio(v)
 			if max == min then return 0 end
@@ -1619,11 +1660,13 @@ function LapoUI.create(cfg)
 		Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 		self:_regTheme(fill, "BackgroundColor3", "Primary")
 
-		local knob = Utils.new("Frame", {
+		local knob = Utils.new("TextButton", {
 			Size = UDim2.new(0, IsMobile and 14 or 16, 0, IsMobile and 14 or 16),
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.new(ratio(value), 0, 0.5, 0),
 			BackgroundColor3 = Theme.TextMain,
+			Text = "",
+			AutoButtonColor = false,
 			ZIndex = 5,
 			Parent = bar,
 		})
@@ -1677,31 +1720,33 @@ function LapoUI.create(cfg)
 			if endConn then endConn:Disconnect() endConn = nil end
 		end
 
-		Utils.bind(self._connections, bar.InputBegan, function(i)
-			if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-				dragging = true
-				setValue(toVal(UserInputService:GetMouseLocation().X))
-
-				stopDrag()
-				dragging = true
-
-				dragConn = UserInputService.InputChanged:Connect(function(ch)
-					if not dragging then return end
-					if ch.UserInputType == Enum.UserInputType.MouseMovement or ch.UserInputType == Enum.UserInputType.Touch then
-						setValue(toVal(UserInputService:GetMouseLocation().X))
-					end
-				end)
-
-				endConn = UserInputService.InputEnded:Connect(function(ended)
-					if ended.UserInputType == Enum.UserInputType.MouseButton1 or ended.UserInputType == Enum.UserInputType.Touch then
-						stopDrag()
-					end
-				end)
-
-				table.insert(self._connections, dragConn)
-				table.insert(self._connections, endConn)
+		local function beginDrag(i)
+			if i.UserInputType ~= Enum.UserInputType.MouseButton1 and i.UserInputType ~= Enum.UserInputType.Touch then
+				return
 			end
-		end)
+			stopDrag()
+			dragging = true
+			setValue(toVal(UserInputService:GetMouseLocation().X))
+
+			dragConn = UserInputService.InputChanged:Connect(function(ch)
+				if not dragging then return end
+				if ch.UserInputType == Enum.UserInputType.MouseMovement or ch.UserInputType == Enum.UserInputType.Touch then
+					setValue(toVal(UserInputService:GetMouseLocation().X))
+				end
+			end)
+
+			endConn = UserInputService.InputEnded:Connect(function(ended)
+				if ended.UserInputType == Enum.UserInputType.MouseButton1 or ended.UserInputType == Enum.UserInputType.Touch then
+					stopDrag()
+				end
+			end)
+
+			table.insert(self._connections, dragConn)
+			table.insert(self._connections, endConn)
+		end
+
+		Utils.bind(self._connections, bar.InputBegan, beginDrag)
+		Utils.bind(self._connections, knob.InputBegan, beginDrag)
 
 		return {
 			Get = function() return value end,
@@ -1724,7 +1769,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local progStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(progStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1795,7 +1841,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local cpStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(cpStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1823,17 +1870,20 @@ function LapoUI.create(cfg)
 			Parent = holder,
 		})
 		Instance.new("UICorner", preview).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
-		Utils.uiStroke(preview, Theme.Stroke, 1, 0.2)
+		local previewStroke = Utils.uiStroke(preview, Theme.Stroke, 1, 0.2)
+		self:_regTheme(previewStroke, "Color", "Stroke")
 
 		local pal = Utils.new("Frame", {
 			Visible = false,
 			Size = UDim2.new(0, IsMobile and 220 or 260, 0, IsMobile and 160 or 180),
 			BackgroundColor3 = Theme.Panel,
+			Active = true,
 			ZIndex = 4001,
 			Parent = screen,
 		})
 		Instance.new("UICorner", pal).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(pal, Theme.Stroke, 1.5, 0.1)
+		local palStroke = Utils.uiStroke(pal, Theme.Stroke, 1.5, 0.1)
+		self:_regTheme(palStroke, "Color", "Stroke")
 		Utils.dropShadow(pal, UDim2.new(1, 16, 1, 16), 0.55)
 		self:_regTheme(pal, "BackgroundColor3", "Panel")
 
@@ -1925,7 +1975,8 @@ function LapoUI.create(cfg)
 			ZIndex = 2,
 		})
 		Instance.new("UICorner", holder).CornerRadius = UDim.new(0, IsMobile and 10 or 12)
-		Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		local keyStroke = Utils.uiStroke(holder, Theme.Stroke, 1, 0.2)
+		self:_regTheme(keyStroke, "Color", "Stroke")
 		tabAdd(tab, holder)
 		self:_regTheme(holder, "BackgroundColor3", "ItemBg")
 
@@ -1958,7 +2009,8 @@ function LapoUI.create(cfg)
 			Parent = holder,
 		})
 		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, IsMobile and 8 or 10)
-		Utils.uiStroke(btn, Theme.Stroke, 1, 0.25)
+		local keyBtnStroke = Utils.uiStroke(btn, Theme.Stroke, 1, 0.25)
+		self:_regTheme(keyBtnStroke, "Color", "Stroke")
 		self:_regTheme(btn, "TextColor3", "TextMain")
 
 		local current = defaultKey
