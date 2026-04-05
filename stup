@@ -1,7 +1,6 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -145,7 +144,10 @@ local function findRoot(model)
 end
 
 local function tweenTo(position, speed)
-	if not HumanoidRootPart then
+	if not HumanoidRootPart or not HumanoidRootPart.Parent then
+		return
+	end
+	if not Humanoid or Humanoid.Health <= 0 then
 		return
 	end
 	local distance = (HumanoidRootPart.Position - position).Magnitude
@@ -205,7 +207,7 @@ local function isAliveMob(model)
 		return false
 	end
 	local hum = model:FindFirstChildOfClass("Humanoid")
-	return hum and hum.Health > 0
+	return hum and hum.Health > 0 and model.Parent ~= nil
 end
 
 local function getClosestTarget()
@@ -220,17 +222,19 @@ local function getClosestTarget()
 		if isAliveMob(mob) then
 			local root = findRoot(mob)
 			if root then
-				local allowed = true
-				if cfg.autofarm.targetMob ~= "Auto (Quest/Nearest)" then
-					allowed = mob.Name == cfg.autofarm.targetMob
-				elseif cfg.autofarm.questOnly then
-					allowed = questEnemies[mob.Name] == true
-				end
-				if allowed then
-					local dist = (HumanoidRootPart.Position - root.Position).Magnitude
-					if not bestDist or dist < bestDist then
-						bestDist = dist
-						chosen = mob
+				if mob.Name ~= LocalPlayer.Name then
+					local allowed = true
+					if cfg.autofarm.targetMob ~= "Auto (Quest/Nearest)" then
+						allowed = mob.Name == cfg.autofarm.targetMob
+					elseif cfg.autofarm.questOnly then
+						allowed = questEnemies[mob.Name] == true
+					end
+					if allowed then
+						local dist = (HumanoidRootPart.Position - root.Position).Magnitude
+						if not bestDist or dist < bestDist then
+							bestDist = dist
+							chosen = mob
+						end
 					end
 				end
 			end
@@ -246,10 +250,6 @@ local function triggerAttack()
 			equippedTool:Activate()
 		end)
 	end
-	pcall(function()
-		VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-		VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-	end)
 end
 
 local RayfieldOk, Rayfield = pcall(function()
@@ -504,23 +504,28 @@ AutoBuyTab:CreateButton({
 
 task.spawn(function()
 	while true do
-		if cfg.autofarm.enabled then
-			if cfg.autofarm.autoQuest then
-				local quests = Data:FindFirstChild("Quests")
-				local noQuest = (not quests) or (#quests:GetChildren() == 0)
-				if noQuest then
-					interactWithNpc(cfg.autofarm.questNpc)
-					task.wait(0.3)
+		local ok, _ = pcall(function()
+			if cfg.autofarm.enabled then
+				if cfg.autofarm.autoQuest then
+					local quests = Data:FindFirstChild("Quests")
+					local noQuest = (not quests) or (#quests:GetChildren() == 0)
+					if noQuest then
+						interactWithNpc(cfg.autofarm.questNpc)
+						task.wait(0.3)
+					end
+				end
+
+				local target = getClosestTarget()
+				local root = findRoot(target)
+				if target and root and HumanoidRootPart then
+					local offset = root.CFrame.LookVector * -cfg.autofarm.distance
+					tweenTo(root.Position + Vector3.new(offset.X, 0, offset.Z), cfg.autofarm.speed)
+					triggerAttack()
 				end
 			end
-
-			local target = getClosestTarget()
-			local root = findRoot(target)
-			if target and root and HumanoidRootPart then
-				local offset = root.CFrame.LookVector * -cfg.autofarm.distance
-				tweenTo(root.Position + Vector3.new(offset.X, 0, offset.Z), cfg.autofarm.speed)
-				triggerAttack()
-			end
+		end)
+		if not ok then
+			task.wait(0.3)
 		end
 		task.wait(math.max(cfg.autofarm.interval, 0.05))
 	end
@@ -528,14 +533,19 @@ end)
 
 task.spawn(function()
 	while true do
-		if cfg.autostand.enabled then
-			local standValue = Data:FindFirstChild("Stand")
-			local standName = standValue and standValue.Value or "None"
-			if standName == "None" then
-				useEquippedItem(cfg.autostand.arrowName)
-			else
-				useEquippedItem(cfg.autostand.rokakaName)
+		local ok, _ = pcall(function()
+			if cfg.autostand.enabled then
+				local standValue = Data:FindFirstChild("Stand")
+				local standName = standValue and standValue.Value or "None"
+				if standName == "None" then
+					useEquippedItem(cfg.autostand.arrowName)
+				else
+					useEquippedItem(cfg.autostand.rokakaName)
+				end
 			end
+		end)
+		if not ok then
+			task.wait(0.3)
 		end
 		task.wait(math.max(cfg.autostand.delay, 0.2))
 	end
@@ -543,17 +553,22 @@ end)
 
 task.spawn(function()
 	while true do
-		if cfg.autobuy.enabled and BuyItemRemote then
-			if hasDesiredTrait() then
-				cfg.autobuy.enabled = false
-			elseif cfg.autobuy.buysDone >= cfg.autobuy.maxBuys then
-				cfg.autobuy.enabled = false
-			else
-				pcall(function()
-					BuyItemRemote:FireServer(cfg.autobuy.merchantKey, cfg.autobuy.option)
-				end)
-				cfg.autobuy.buysDone = cfg.autobuy.buysDone + 1
+		local ok, _ = pcall(function()
+			if cfg.autobuy.enabled and BuyItemRemote then
+				if hasDesiredTrait() then
+					cfg.autobuy.enabled = false
+				elseif cfg.autobuy.buysDone >= cfg.autobuy.maxBuys then
+					cfg.autobuy.enabled = false
+				else
+					pcall(function()
+						BuyItemRemote:FireServer(cfg.autobuy.merchantKey, cfg.autobuy.option)
+					end)
+					cfg.autobuy.buysDone = cfg.autobuy.buysDone + 1
+				end
 			end
+		end)
+		if not ok then
+			task.wait(0.3)
 		end
 		task.wait(math.max(cfg.autobuy.interval, 0.1))
 	end
