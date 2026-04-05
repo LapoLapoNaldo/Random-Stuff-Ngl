@@ -1,0 +1,560 @@
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local LocalPlayer = Players.LocalPlayer
+
+local Events = ReplicatedStorage:FindFirstChild("Events")
+local UseItemRemote = Events and Events:FindFirstChild("UseItem")
+local BuyItemRemote = Events and Events:FindFirstChild("BuyItem")
+
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
+local HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+local Data = LocalPlayer:WaitForChild("Data")
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+	Character = char
+	Humanoid = char:WaitForChild("Humanoid")
+	HumanoidRootPart = char:WaitForChild("HumanoidRootPart")
+end)
+
+local cfg = {
+	autofarm = {
+		enabled = false,
+		speed = 120,
+		distance = 5,
+		interval = 0.2,
+		questOnly = true,
+		targetMob = "Auto (Quest/Nearest)",
+		autoQuest = true,
+		questNpc = "Scared Noob",
+	},
+	autostand = {
+		enabled = false,
+		arrowName = "Stand Arrow",
+		rokakaName = "Rokakaka",
+		delay = 1.2,
+	},
+	autobuy = {
+		enabled = false,
+		merchantKey = "Merchant1",
+		option = "Option2",
+		maxBuys = 50,
+		buysDone = 0,
+		stopOnTrait = true,
+		targetTraits = "Legendary, Mythical, Godly",
+		interval = 0.45,
+	},
+}
+
+local function splitCsv(text)
+	local out = {}
+	for piece in string.gmatch(text or "", "([^,]+)") do
+		local clean = piece:gsub("^%s+", ""):gsub("%s+$", "")
+		if clean ~= "" then
+			table.insert(out, clean:lower())
+		end
+	end
+	return out
+end
+
+local function getTrait()
+	local attri = Data and Data:FindFirstChild("Attri")
+	return attri and attri.Value or ""
+end
+
+local function hasDesiredTrait()
+	if not cfg.autobuy.stopOnTrait then
+		return false
+	end
+	local trait = string.lower(getTrait())
+	if trait == "" then
+		return false
+	end
+	for _, name in ipairs(splitCsv(cfg.autobuy.targetTraits)) do
+		if trait == name then
+			return true
+		end
+	end
+	return false
+end
+
+local function getToolByName(itemName)
+	if Character then
+		local inChar = Character:FindFirstChild(itemName)
+		if inChar and inChar:IsA("Tool") then
+			return inChar
+		end
+	end
+	local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+	if backpack then
+		local inBag = backpack:FindFirstChild(itemName)
+		if inBag and inBag:IsA("Tool") then
+			return inBag
+		end
+	end
+	return nil
+end
+
+local function equipTool(tool)
+	if tool and Humanoid then
+		pcall(function()
+			Humanoid:EquipTool(tool)
+		end)
+	end
+end
+
+local function useEquippedItem(toolName)
+	if not UseItemRemote then
+		return false
+	end
+	local tool = getToolByName(toolName)
+	if not tool then
+		return false
+	end
+	equipTool(tool)
+	task.wait(0.1)
+	pcall(function()
+		UseItemRemote:FireServer()
+	end)
+	return true
+end
+
+local function getNpcModel(name)
+	local map = workspace:FindFirstChild("Map")
+	if not map then
+		return nil
+	end
+	local npcs = map:FindFirstChild("NPCs")
+	if not npcs then
+		return nil
+	end
+	return npcs:FindFirstChild(name)
+end
+
+local function findRoot(model)
+	if not model then
+		return nil
+	end
+	return model:FindFirstChild("HumanoidRootPart")
+		or model:FindFirstChild("Torso")
+		or model:FindFirstChild("UpperTorso")
+		or model.PrimaryPart
+end
+
+local function tweenTo(position, speed)
+	if not HumanoidRootPart then
+		return
+	end
+	local distance = (HumanoidRootPart.Position - position).Magnitude
+	local duration = math.max(distance / math.max(speed, 1), 0.05)
+	local tween = TweenService:Create(
+		HumanoidRootPart,
+		TweenInfo.new(duration, Enum.EasingStyle.Linear),
+		{ CFrame = CFrame.new(position) }
+	)
+	tween:Play()
+	tween.Completed:Wait()
+end
+
+local function touchPrompt(prompt)
+	if not prompt then
+		return
+	end
+	pcall(function()
+		if fireproximityprompt then
+			fireproximityprompt(prompt, 1)
+		else
+			prompt:InputHoldBegin()
+			task.wait(prompt.HoldDuration + 0.08)
+			prompt:InputHoldEnd()
+		end
+	end)
+end
+
+local function interactWithNpc(npcName)
+	local npc = getNpcModel(npcName)
+	local root = findRoot(npc)
+	if not root then
+		return
+	end
+	tweenTo(root.Position + Vector3.new(0, 0, 4), cfg.autofarm.speed)
+	local prompt = npc:FindFirstChildWhichIsA("ProximityPrompt", true)
+	touchPrompt(prompt)
+end
+
+local function getQuestEnemyNames()
+	local out = {}
+	local quests = Data and Data:FindFirstChild("Quests")
+	if not quests then
+		return out
+	end
+	for _, q in ipairs(quests:GetChildren()) do
+		local enemy = q:FindFirstChild("Enemy")
+		if enemy and enemy:IsA("StringValue") and enemy.Value ~= "" then
+			out[enemy.Value] = true
+		end
+	end
+	return out
+end
+
+local function isAliveMob(model)
+	if not model or model == Character then
+		return false
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	return hum and hum.Health > 0
+end
+
+local function getClosestTarget()
+	local living = workspace:FindFirstChild("Living")
+	if not living or not HumanoidRootPart then
+		return nil
+	end
+
+	local questEnemies = getQuestEnemyNames()
+	local chosen, bestDist
+	for _, mob in ipairs(living:GetChildren()) do
+		if isAliveMob(mob) then
+			local root = findRoot(mob)
+			if root then
+				local allowed = true
+				if cfg.autofarm.targetMob ~= "Auto (Quest/Nearest)" then
+					allowed = mob.Name == cfg.autofarm.targetMob
+				elseif cfg.autofarm.questOnly then
+					allowed = questEnemies[mob.Name] == true
+				end
+				if allowed then
+					local dist = (HumanoidRootPart.Position - root.Position).Magnitude
+					if not bestDist or dist < bestDist then
+						bestDist = dist
+						chosen = mob
+					end
+				end
+			end
+		end
+	end
+	return chosen
+end
+
+local function triggerAttack()
+	local equippedTool = Character and Character:FindFirstChildOfClass("Tool")
+	if equippedTool then
+		pcall(function()
+			equippedTool:Activate()
+		end)
+	end
+	pcall(function()
+		VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+		VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+	end)
+end
+
+local RayfieldOk, Rayfield = pcall(function()
+	return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+end)
+if not RayfieldOk or not Rayfield then
+	warn("Falha ao carregar Rayfield.")
+	return
+end
+
+local Window = Rayfield:CreateWindow({
+	Name = "Cheatzinho Hub",
+	LoadingTitle = "Cheatzinho Hub",
+	LoadingSubtitle = "Rayfield",
+	ConfigurationSaving = {
+		Enabled = true,
+		FolderName = "Cheatzinho",
+		FileName = "hub_config",
+	},
+	Discord = {
+		Enabled = false,
+		Invite = "",
+		RememberJoins = false,
+	},
+	KeySystem = false,
+})
+
+local AutofarmTab = Window:CreateTab("Autofarm", 4483362458)
+local AutoStandTab = Window:CreateTab("Auto Stand", 4483362458)
+local AutoBuyTab = Window:CreateTab("Auto Buy", 4483362458)
+
+AutofarmTab:CreateToggle({
+	Name = "Autofarm",
+	CurrentValue = cfg.autofarm.enabled,
+	Flag = "af_enabled",
+	Callback = function(v)
+		cfg.autofarm.enabled = v
+	end,
+})
+AutofarmTab:CreateSlider({
+	Name = "Velocidade Tween",
+	Range = { 20, 300 },
+	Increment = 1,
+	Suffix = "",
+	CurrentValue = cfg.autofarm.speed,
+	Flag = "af_speed",
+	Callback = function(v)
+		cfg.autofarm.speed = v
+	end,
+})
+AutofarmTab:CreateSlider({
+	Name = "Distancia do Alvo",
+	Range = { 1, 20 },
+	Increment = 1,
+	Suffix = "",
+	CurrentValue = cfg.autofarm.distance,
+	Flag = "af_distance",
+	Callback = function(v)
+		cfg.autofarm.distance = v
+	end,
+})
+AutofarmTab:CreateSlider({
+	Name = "Intervalo (ms)",
+	Range = { 50, 1200 },
+	Increment = 10,
+	Suffix = "ms",
+	CurrentValue = math.floor(cfg.autofarm.interval * 1000),
+	Flag = "af_interval",
+	Callback = function(v)
+		cfg.autofarm.interval = v / 1000
+	end,
+})
+AutofarmTab:CreateToggle({
+	Name = "Somente Mobs da Quest",
+	CurrentValue = cfg.autofarm.questOnly,
+	Flag = "af_questonly",
+	Callback = function(v)
+		cfg.autofarm.questOnly = v
+	end,
+})
+AutofarmTab:CreateToggle({
+	Name = "Auto Pegar/Entregar Quest",
+	CurrentValue = cfg.autofarm.autoQuest,
+	Flag = "af_autoquest",
+	Callback = function(v)
+		cfg.autofarm.autoQuest = v
+	end,
+})
+AutofarmTab:CreateInput({
+	Name = "NPC de Quest",
+	CurrentValue = cfg.autofarm.questNpc,
+	PlaceholderText = "Scared Noob",
+	RemoveTextAfterFocusLost = false,
+	Flag = "af_questnpc",
+	Callback = function(v)
+		if v ~= "" then
+			cfg.autofarm.questNpc = v
+		end
+	end,
+})
+AutofarmTab:CreateInput({
+	Name = "Mob Alvo (nome exato)",
+	CurrentValue = cfg.autofarm.targetMob,
+	PlaceholderText = "Auto (Quest/Nearest)",
+	RemoveTextAfterFocusLost = false,
+	Flag = "af_target",
+	Callback = function(v)
+		cfg.autofarm.targetMob = (v ~= "" and v) or "Auto (Quest/Nearest)"
+	end,
+})
+AutofarmTab:CreateButton({
+	Name = "Interagir com NPC agora",
+	Callback = function()
+		interactWithNpc(cfg.autofarm.questNpc)
+	end,
+})
+
+AutoStandTab:CreateToggle({
+	Name = "Auto Stand (Arrow / Rokaka)",
+	CurrentValue = cfg.autostand.enabled,
+	Flag = "as_enabled",
+	Callback = function(v)
+		cfg.autostand.enabled = v
+	end,
+})
+AutoStandTab:CreateInput({
+	Name = "Nome Arrow",
+	CurrentValue = cfg.autostand.arrowName,
+	PlaceholderText = "Stand Arrow",
+	RemoveTextAfterFocusLost = false,
+	Flag = "as_arrow",
+	Callback = function(v)
+		if v ~= "" then
+			cfg.autostand.arrowName = v
+		end
+	end,
+})
+AutoStandTab:CreateInput({
+	Name = "Nome Rokaka",
+	CurrentValue = cfg.autostand.rokakaName,
+	PlaceholderText = "Rokakaka",
+	RemoveTextAfterFocusLost = false,
+	Flag = "as_roka",
+	Callback = function(v)
+		if v ~= "" then
+			cfg.autostand.rokakaName = v
+		end
+	end,
+})
+AutoStandTab:CreateSlider({
+	Name = "Delay entre usos (ms)",
+	Range = { 200, 5000 },
+	Increment = 50,
+	Suffix = "ms",
+	CurrentValue = math.floor(cfg.autostand.delay * 1000),
+	Flag = "as_delay",
+	Callback = function(v)
+		cfg.autostand.delay = v / 1000
+	end,
+})
+AutoStandTab:CreateButton({
+	Name = "Usar Arrow agora",
+	Callback = function()
+		useEquippedItem(cfg.autostand.arrowName)
+	end,
+})
+AutoStandTab:CreateButton({
+	Name = "Usar Rokaka agora",
+	Callback = function()
+		useEquippedItem(cfg.autostand.rokakaName)
+	end,
+})
+
+AutoBuyTab:CreateToggle({
+	Name = "Auto Comprar",
+	CurrentValue = cfg.autobuy.enabled,
+	Flag = "ab_enabled",
+	Callback = function(v)
+		cfg.autobuy.enabled = v
+	end,
+})
+AutoBuyTab:CreateInput({
+	Name = "MerchantKey",
+	CurrentValue = cfg.autobuy.merchantKey,
+	PlaceholderText = "Merchant1",
+	RemoveTextAfterFocusLost = false,
+	Flag = "ab_merchant",
+	Callback = function(v)
+		if v ~= "" then
+			cfg.autobuy.merchantKey = v
+		end
+	end,
+})
+AutoBuyTab:CreateInput({
+	Name = "Option (Option1..4)",
+	CurrentValue = cfg.autobuy.option,
+	PlaceholderText = "Option2",
+	RemoveTextAfterFocusLost = false,
+	Flag = "ab_option",
+	Callback = function(v)
+		if v ~= "" then
+			cfg.autobuy.option = v
+		end
+	end,
+})
+AutoBuyTab:CreateSlider({
+	Name = "Maximo de Compras",
+	Range = { 1, 5000 },
+	Increment = 1,
+	Suffix = "",
+	CurrentValue = cfg.autobuy.maxBuys,
+	Flag = "ab_max",
+	Callback = function(v)
+		cfg.autobuy.maxBuys = v
+	end,
+})
+AutoBuyTab:CreateToggle({
+	Name = "Parar ao pegar trait",
+	CurrentValue = cfg.autobuy.stopOnTrait,
+	Flag = "ab_stoptrait",
+	Callback = function(v)
+		cfg.autobuy.stopOnTrait = v
+	end,
+})
+AutoBuyTab:CreateInput({
+	Name = "Traits alvo (csv)",
+	CurrentValue = cfg.autobuy.targetTraits,
+	PlaceholderText = "Legendary, Mythical, Godly",
+	RemoveTextAfterFocusLost = false,
+	Flag = "ab_traits",
+	Callback = function(v)
+		cfg.autobuy.targetTraits = v
+	end,
+})
+AutoBuyTab:CreateSlider({
+	Name = "Intervalo compra (ms)",
+	Range = { 100, 4000 },
+	Increment = 10,
+	Suffix = "ms",
+	CurrentValue = math.floor(cfg.autobuy.interval * 1000),
+	Flag = "ab_interval",
+	Callback = function(v)
+		cfg.autobuy.interval = v / 1000
+	end,
+})
+AutoBuyTab:CreateButton({
+	Name = "Resetar contador de compras",
+	Callback = function()
+		cfg.autobuy.buysDone = 0
+	end,
+})
+
+task.spawn(function()
+	while true do
+		if cfg.autofarm.enabled then
+			if cfg.autofarm.autoQuest then
+				local quests = Data:FindFirstChild("Quests")
+				local noQuest = (not quests) or (#quests:GetChildren() == 0)
+				if noQuest then
+					interactWithNpc(cfg.autofarm.questNpc)
+					task.wait(0.3)
+				end
+			end
+
+			local target = getClosestTarget()
+			local root = findRoot(target)
+			if target and root and HumanoidRootPart then
+				local offset = root.CFrame.LookVector * -cfg.autofarm.distance
+				tweenTo(root.Position + Vector3.new(offset.X, 0, offset.Z), cfg.autofarm.speed)
+				triggerAttack()
+			end
+		end
+		task.wait(math.max(cfg.autofarm.interval, 0.05))
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if cfg.autostand.enabled then
+			local standValue = Data:FindFirstChild("Stand")
+			local standName = standValue and standValue.Value or "None"
+			if standName == "None" then
+				useEquippedItem(cfg.autostand.arrowName)
+			else
+				useEquippedItem(cfg.autostand.rokakaName)
+			end
+		end
+		task.wait(math.max(cfg.autostand.delay, 0.2))
+	end
+end)
+
+task.spawn(function()
+	while true do
+		if cfg.autobuy.enabled and BuyItemRemote then
+			if hasDesiredTrait() then
+				cfg.autobuy.enabled = false
+			elseif cfg.autobuy.buysDone >= cfg.autobuy.maxBuys then
+				cfg.autobuy.enabled = false
+			else
+				pcall(function()
+					BuyItemRemote:FireServer(cfg.autobuy.merchantKey, cfg.autobuy.option)
+				end)
+				cfg.autobuy.buysDone = cfg.autobuy.buysDone + 1
+			end
+		end
+		task.wait(math.max(cfg.autobuy.interval, 0.1))
+	end
+end)
