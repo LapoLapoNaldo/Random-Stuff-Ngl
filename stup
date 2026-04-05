@@ -8,8 +8,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local VirtualUser = game:GetService("VirtualUser")
+local StarterGui = game:GetService("StarterGui")
 
 local LocalPlayer = Players.LocalPlayer
+local VirtualInputManager = pcall(function()
+    return game:GetService("VirtualInputManager")
+end) and game:GetService("VirtualInputManager") or nil
 
 local okRayfield, Rayfield = pcall(function()
     return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
@@ -21,26 +25,55 @@ if not okRayfield or not Rayfield then
     return
 end
 
+local DEFAULT_TRAITS = {
+    "None", "Common", "Uncommon", "Rare", "Epic", "Legendary", "Godly", "Demonic", "Demon",
+    "Hacker", "Glass Cannon", "Scourge", "Mysterious", "Unique", "Supportive", "Pathetic",
+}
+
+local DEFAULT_ROUTE = {
+    {min = 1, max = 24, enemies = {"Jungle Bandit"}},
+    {min = 25, max = 59, enemies = {"Sewer Vampire", "Alien"}},
+    {min = 60, max = 99, enemies = {"Scary Monster", "Swamp Monster"}},
+    {min = 100, max = 149, enemies = {"Pillerman", "Kakyoin"}},
+    {min = 150, max = 249, enemies = {"Jotaro Part 4", "Yoshikage Kira"}},
+    {min = 250, max = 399, enemies = {"Dio Over Heaven"}},
+    {min = 400, max = 9999, enemies = {"Boss", "Giorno Giovanna"}},
+}
+
+local COMBAT_KEYS = {
+    "Z", "X", "C", "V", "B", "N", "F", "G", "H", "J", "R", "T", "Y", "Q", "E",
+}
+
 local Settings = {
     farmEnabled = false,
-    farmUseActiveQuest = true,
+    farmTargetMode = "ActiveQuest",
     farmMoveType = "Tween",
-    farmTweenSpeed = 250,
+    farmTweenSpeed = 260,
+    farmLookAtNpc = true,
+    farmHitInterval = 0.12,
     farmAttackDistance = 3,
     farmAttackHeight = 2,
     farmAttackPosition = "Behind",
-    farmLookAtNpc = true,
-    farmHitInterval = 0.12,
+    farmCustomEnemyInput = "",
+    autoSummonStand = true,
+
+    autoSkillsEnabled = false,
+    autoSkillKeys = {"Z", "X", "C", "V"},
+    autoSkillInterval = 1.0,
 
     standEnabled = false,
-    standDesiredTier = 4,
-    standAutoUseRokakaka = true,
     standRollDelay = 1.1,
+    standUseRoka = true,
+    standUseArrow = true,
+    standStopByTrait = true,
+    standStopByStand = false,
+    standWantedTraits = {"Godly", "Demonic", "Legendary"},
+    standWantedStands = {},
 
     autoBuyArrow = false,
-    autoBuyRokakaka = false,
+    autoBuyRoka = false,
     minArrowStock = 1,
-    minRokaStock = 2,
+    minRokaStock = 1,
     arrowMerchantTag = "Merchant1",
     arrowMerchantOption = "Option1",
     rokaMerchantTag = "Merchant1",
@@ -48,7 +81,9 @@ local Settings = {
 
     dungeonEnabled = false,
     dungeonMoveType = "Tween",
-    dungeonLookAtNpc = true,
+    dungeonNpcName = "Auto",
+    dungeonEnemyInput = "",
+    dungeonAutoStart = true,
 
     walkSpeedEnabled = false,
     walkSpeed = 16,
@@ -58,42 +93,9 @@ local Settings = {
     antiAfk = true,
 }
 
-local QUEST_ROUTE = {
-    {min = 1, max = 24, enemies = {"Jungle Bandit"}},
-    {min = 25, max = 59, enemies = {"Sewer Vampire", "Alien"}},
-    {min = 60, max = 99, enemies = {"Scary Monster", "Swamp Monster"}},
-    {min = 100, max = 149, enemies = {"Pillerman", "Kakyoin"}},
-    {min = 150, max = 249, enemies = {"Jotaro Part 4", "Yoshikage Kira"}},
-    {min = 250, max = 399, enemies = {"Dio Over Heaven"}},
-    {min = 400, max = 5000, enemies = {"Boss", "Giorno Giovanna"}},
-}
-
-local TIER_LABELS = {
-    [1] = "Common",
-    [2] = "Uncommon",
-    [3] = "Rare",
-    [4] = "Epic",
-    [5] = "Legendary",
-    [6] = "Mythic",
-    [7] = "Godly",
-}
-
-local TIER_TO_VALUE = {
-    Common = 1,
-    Uncommon = 2,
-    Rare = 3,
-    Epic = 4,
-    Legendary = 5,
-    Mythic = 6,
-    Godly = 7,
-}
-
-local IGNORE_NAME_MATCH = {
-    ["dummy"] = true,
-}
-
 local activeTween
-local antiAfkHooked = false
+local lastSkillTick = 0
+local hadRokaDeath = false
 
 local function notify(title, content)
     Rayfield:Notify({
@@ -102,6 +104,40 @@ local function notify(title, content)
         Duration = 4,
         Image = 4483362458,
     })
+end
+
+local function firstOption(v)
+    if typeof(v) == "table" then
+        return v[1]
+    end
+    return v
+end
+
+local function parseCsv(input)
+    local out = {}
+    if typeof(input) ~= "string" then
+        return out
+    end
+
+    for token in string.gmatch(input, "([^,]+)") do
+        local clean = string.gsub(token, "^%s+", "")
+        clean = string.gsub(clean, "%s+$", "")
+        if #clean > 0 then
+            table.insert(out, clean)
+        end
+    end
+
+    return out
+end
+
+local function listContainsCI(list, text)
+    local t = string.lower(tostring(text or ""))
+    for _, v in ipairs(list) do
+        if string.lower(tostring(v)) == t then
+            return true
+        end
+    end
+    return false
 end
 
 local function getCharacter()
@@ -122,49 +158,91 @@ local function getHumanoid(model)
     return model:FindFirstChildOfClass("Humanoid")
 end
 
-local function getPlayerHumanoid()
-    local ch = getCharacter()
-    return ch and getHumanoid(ch)
-end
-
 local function getPlayerRoot()
     local ch = getCharacter()
     return ch and getRoot(ch)
 end
 
-local function isAliveHumanoid(h)
-    return h and h.Health > 0
+local function getPlayerHumanoid()
+    local ch = getCharacter()
+    return ch and getHumanoid(ch)
+end
+
+local function getEvents()
+    return ReplicatedStorage:FindFirstChild("Events")
+end
+
+local function getData()
+    return LocalPlayer:FindFirstChild("Data")
+end
+
+local function dataValue(name, fallback)
+    local d = getData()
+    local v = d and d:FindFirstChild(name)
+    if v then
+        return v.Value
+    end
+    return fallback
 end
 
 local function currentLevel()
-    local data = LocalPlayer:FindFirstChild("Data")
-    local lv = data and data:FindFirstChild("Level")
-    return (lv and lv.Value) or 1
+    return dataValue("Level", 1)
 end
 
-local function getCurrentStandTier()
-    local ch = getCharacter()
-    local stats = ch and ch:FindFirstChild("Stats")
-    local tier = stats and stats:FindFirstChild("StandTier")
-    local value = tier and tier.Value
+local function currentStandCode()
+    return dataValue("Stand", "None")
+end
 
-    if typeof(value) == "number" then
-        return value
-    end
-    if typeof(value) == "string" then
-        local parsed = tonumber(value)
-        if parsed then
-            return parsed
+local function currentTrait()
+    return dataValue("Attri", "None")
+end
+
+local function getStandDisplayName(standCode)
+    local convert = ReplicatedStorage:FindFirstChild("StandNameConvert")
+    local map = convert and convert:FindFirstChild(tostring(standCode))
+    return map and map.Value or tostring(standCode)
+end
+
+local function getAllTraitOptions()
+    local options = {}
+    local add = function(value)
+        if value and #tostring(value) > 0 and not listContainsCI(options, value) then
+            table.insert(options, tostring(value))
         end
     end
 
-    return 0
+    for _, t in ipairs(DEFAULT_TRAITS) do
+        add(t)
+    end
+
+    local d = getData()
+    if d then
+        add(d:FindFirstChild("Attri") and d.Attri.Value)
+        for i = 1, 5 do
+            local slot = d:FindFirstChild("Slot" .. i .. "Attri")
+            if slot then
+                add(slot.Value)
+            end
+        end
+    end
+
+    table.sort(options)
+    return options
 end
 
-local function getCurrentStandName()
-    local data = LocalPlayer:FindFirstChild("Data")
-    local stand = data and data:FindFirstChild("Stand")
-    return stand and stand.Value or "None"
+local function getAllStandOptions()
+    local options = {}
+    local convert = ReplicatedStorage:FindFirstChild("StandNameConvert")
+    if convert then
+        for _, child in ipairs(convert:GetChildren()) do
+            if child:IsA("StringValue") then
+                table.insert(options, child.Value)
+            end
+        end
+    end
+
+    table.sort(options)
+    return options
 end
 
 local function getLivingFolder()
@@ -176,8 +254,11 @@ local function isHostileNpc(model)
         return false
     end
 
-    local char = LocalPlayer.Character
-    if char and model == char then
+    if model == LocalPlayer.Character then
+        return false
+    end
+
+    if Players:GetPlayerFromCharacter(model) then
         return false
     end
 
@@ -187,157 +268,183 @@ local function isHostileNpc(model)
         return false
     end
 
-    local lowerName = string.lower(model.Name)
-    for word in pairs(IGNORE_NAME_MATCH) do
-        if string.find(lowerName, word, 1, true) then
-            return false
-        end
+    local lower = string.lower(model.Name)
+    if string.find(lower, "dummy", 1, true) then
+        return false
     end
 
     return true
 end
 
-local function normalizeName(name)
-    return string.lower(tostring(name))
+local function getEnemyLevel(model)
+    if not model then
+        return nil
+    end
+
+    local lv = model:FindFirstChild("Level")
+    if lv and (lv:IsA("IntValue") or lv:IsA("NumberValue")) then
+        return lv.Value
+    end
+
+    local stats = model:FindFirstChild("Stats")
+    local lv2 = stats and stats:FindFirstChild("Level")
+    if lv2 and (lv2:IsA("IntValue") or lv2:IsA("NumberValue")) then
+        return lv2.Value
+    end
+
+    return nil
+end
+
+local function getRecommendedEnemiesByNpcLevel()
+    local living = getLivingFolder()
+    if not living then
+        return {}
+    end
+
+    local byName = {}
+    for _, npc in ipairs(living:GetChildren()) do
+        if isHostileNpc(npc) then
+            local lv = getEnemyLevel(npc)
+            if lv then
+                byName[npc.Name] = lv
+            end
+        end
+    end
+
+    local me = currentLevel()
+    local bestName
+    local bestScore = math.huge
+
+    for name, lv in pairs(byName) do
+        local diff = math.abs(me - lv)
+        local penalty = lv > me and 8 or 0
+        local score = diff + penalty
+        if score < bestScore then
+            bestScore = score
+            bestName = name
+        end
+    end
+
+    if bestName then
+        return {bestName}
+    end
+
+    for _, route in ipairs(DEFAULT_ROUTE) do
+        if me >= route.min and me <= route.max then
+            return route.enemies
+        end
+    end
+
+    return {"Jungle Bandit"}
+end
+
+local function getActiveQuestEnemies()
+    local d = getData()
+    local q = d and d:FindFirstChild("Quests")
+    local out = {}
+
+    if not q then
+        return out
+    end
+
+    for _, quest in ipairs(q:GetChildren()) do
+        local typ = quest:FindFirstChild("Type")
+        local enemy = quest:FindFirstChild("Enemy")
+        local completed = quest:FindFirstChild("Completed")
+        if typ and enemy and typ.Value == "Kill" and ((not completed) or completed.Value == false) then
+            table.insert(out, enemy.Value)
+        end
+    end
+
+    return out
+end
+
+local function currentFarmEnemies()
+    if Settings.farmTargetMode == "Nearest" then
+        return nil
+    end
+
+    if Settings.farmTargetMode == "Custom" then
+        return parseCsv(Settings.farmCustomEnemyInput)
+    end
+
+    if Settings.farmTargetMode == "Recommended" then
+        return getRecommendedEnemiesByNpcLevel()
+    end
+
+    local active = getActiveQuestEnemies()
+    if #active > 0 then
+        return active
+    end
+
+    return getRecommendedEnemiesByNpcLevel()
 end
 
 local function nameMatches(name, list)
-    local target = normalizeName(name)
-    for _, v in ipairs(list) do
-        local nv = normalizeName(v)
-        if target == nv or string.find(target, nv, 1, true) then
+    if not list or #list == 0 then
+        return true
+    end
+
+    local n = string.lower(name)
+    for _, item in ipairs(list) do
+        local key = string.lower(item)
+        if n == key or string.find(n, key, 1, true) then
             return true
         end
     end
     return false
 end
 
-local function getActiveQuestEnemies()
-    local data = LocalPlayer:FindFirstChild("Data")
-    local quests = data and data:FindFirstChild("Quests")
-    local enemies = {}
-
-    if not quests then
-        return enemies
-    end
-
-    for _, quest in ipairs(quests:GetChildren()) do
-        local typ = quest:FindFirstChild("Type")
-        local enemy = quest:FindFirstChild("Enemy")
-        local completed = quest:FindFirstChild("Completed")
-
-        if typ and enemy and typ.Value == "Kill" and (not completed or completed.Value == false) then
-            table.insert(enemies, enemy.Value)
-        end
-    end
-
-    return enemies
-end
-
-local function getRecommendedEnemies()
-    local lv = currentLevel()
-    for _, route in ipairs(QUEST_ROUTE) do
-        if lv >= route.min and lv <= route.max then
-            return route.enemies
-        end
-    end
-    return {"Jungle Bandit"}
-end
-
-local function getFarmEnemyList()
-    if Settings.farmUseActiveQuest then
-        local active = getActiveQuestEnemies()
-        if #active > 0 then
-            return active
-        end
-    end
-
-    return getRecommendedEnemies()
-end
-
 local function findNearestNpc(allowedNames)
     local root = getPlayerRoot()
     local living = getLivingFolder()
-
     if not root or not living then
         return nil
     end
 
-    local nearestModel
-    local nearestDistance = math.huge
+    local best
+    local bestDist = math.huge
 
     for _, npc in ipairs(living:GetChildren()) do
-        if isHostileNpc(npc) then
-            if (not allowedNames) or nameMatches(npc.Name, allowedNames) then
-                local npcRoot = getRoot(npc)
-                if npcRoot then
-                    local dist = (root.Position - npcRoot.Position).Magnitude
-                    if dist < nearestDistance then
-                        nearestDistance = dist
-                        nearestModel = npc
-                    end
+        if isHostileNpc(npc) and nameMatches(npc.Name, allowedNames) then
+            local nroot = getRoot(npc)
+            if nroot then
+                local d = (root.Position - nroot.Position).Magnitude
+                if d < bestDist then
+                    bestDist = d
+                    best = npc
                 end
             end
         end
     end
 
-    return nearestModel, nearestDistance
+    return best
 end
 
-local function findDungeonObjectivePart()
-    local bestPart
-    local bestDistance = math.huge
-    local root = getPlayerRoot()
-    if not root then
-        return nil
-    end
+local function getOffsetCFrame(targetRoot)
+    local dist = Settings.farmAttackDistance
+    local h = Settings.farmAttackHeight
+    local mode = Settings.farmAttackPosition
+    local offset
 
-    for _, inst in ipairs(workspace:GetDescendants()) do
-        if inst:IsA("BasePart") then
-            local n = string.lower(inst.Name)
-            if string.find(n, "objective", 1, true)
-                or string.find(n, "goal", 1, true)
-                or string.find(n, "dungeon", 1, true)
-                or string.find(n, "boss", 1, true)
-                or string.find(n, "portal", 1, true)
-            then
-                local d = (root.Position - inst.Position).Magnitude
-                if d < bestDistance then
-                    bestDistance = d
-                    bestPart = inst
-                end
-            end
-        end
-    end
-
-    return bestPart
-end
-
-local function getOffsetCFrame(targetRoot, attackPosition, attackDistance, attackHeight)
-    local localOffset
-
-    if attackPosition == "Behind" then
-        localOffset = CFrame.new(0, attackHeight, attackDistance)
-    elseif attackPosition == "Front" then
-        localOffset = CFrame.new(0, attackHeight, -attackDistance)
+    if mode == "Behind" then
+        offset = CFrame.new(0, h, dist)
+    elseif mode == "Front" then
+        offset = CFrame.new(0, h, -dist)
+    elseif mode == "Above" then
+        offset = CFrame.new(0, h + dist, 0)
+    elseif mode == "Under" then
+        offset = CFrame.new(0, h - dist, 0)
+    elseif mode == "Left" then
+        offset = CFrame.new(-dist, h, 0)
     else
-        localOffset = CFrame.new(0, attackHeight + attackDistance, 0)
+        offset = CFrame.new(dist, h, 0)
     end
 
-    return targetRoot.CFrame * localOffset
+    return targetRoot.CFrame * offset
 end
 
-local function faceTarget(targetPosition)
-    local root = getPlayerRoot()
-    if not root then
-        return
-    end
-
-    local lookPos = Vector3.new(targetPosition.X, root.Position.Y, targetPosition.Z)
-    root.CFrame = CFrame.lookAt(root.Position, lookPos)
-end
-
-local function stopActiveTween()
+local function stopTween()
     if activeTween then
         pcall(function()
             activeTween:Cancel()
@@ -346,44 +453,51 @@ local function stopActiveTween()
     end
 end
 
-local function moveToCFrame(targetCFrame, moveType, tweenSpeed)
+local function moveTo(targetCf, moveType)
     local root = getPlayerRoot()
-    if not root then
+    local ch = getCharacter()
+    if not root or not ch then
         return
     end
 
     if moveType == "TP" then
-        stopActiveTween()
-        root.CFrame = targetCFrame
+        stopTween()
+        pcall(function()
+            ch:PivotTo(targetCf)
+        end)
+        root.CFrame = targetCf
         return
     end
 
-    local distance = (root.Position - targetCFrame.Position).Magnitude
-    local duration = math.clamp(distance / math.max(tweenSpeed, 1), 0.05, 2)
+    local dist = (root.Position - targetCf.Position).Magnitude
+    local t = math.clamp(dist / math.max(Settings.farmTweenSpeed, 1), 0.05, 1.6)
 
-    stopActiveTween()
-    activeTween = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
-        CFrame = targetCFrame,
-    })
+    stopTween()
+    activeTween = TweenService:Create(root, TweenInfo.new(t, Enum.EasingStyle.Linear), {CFrame = targetCf})
     activeTween:Play()
+end
+
+local function lookAt(pos)
+    local root = getPlayerRoot()
+    if not root then
+        return
+    end
+    local look = Vector3.new(pos.X, root.Position.Y, pos.Z)
+    root.CFrame = CFrame.lookAt(root.Position, look)
 end
 
 local function getToolByName(name)
     local ch = getCharacter()
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
 
-    if ch then
-        local inChar = ch:FindFirstChild(name)
-        if inChar and inChar:IsA("Tool") then
-            return inChar
-        end
+    local t1 = ch and ch:FindFirstChild(name)
+    if t1 and t1:IsA("Tool") then
+        return t1
     end
 
-    if backpack then
-        local inBp = backpack:FindFirstChild(name)
-        if inBp and inBp:IsA("Tool") then
-            return inBp
-        end
+    local t2 = bp and bp:FindFirstChild(name)
+    if t2 and t2:IsA("Tool") then
+        return t2
     end
 
     return nil
@@ -391,10 +505,10 @@ end
 
 local function getToolAmount(name)
     local total = 0
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     local ch = getCharacter()
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
 
-    local function countIn(container)
+    local function scan(container)
         if not container then
             return
         end
@@ -405,9 +519,8 @@ local function getToolAmount(name)
         end
     end
 
-    countIn(backpack)
-    countIn(ch)
-
+    scan(ch)
+    scan(bp)
     return total
 end
 
@@ -415,127 +528,331 @@ local function equipTool(tool)
     local hum = getPlayerHumanoid()
     if hum and tool and tool.Parent ~= getCharacter() then
         hum:EquipTool(tool)
+        task.wait(0.08)
     end
 end
 
-local function activateTool(tool)
+local function useCurrentEquippedItem()
+    local events = getEvents()
+    local remoteUse = events and events:FindFirstChild("UseItem")
+
+    if remoteUse and remoteUse:IsA("RemoteEvent") then
+        pcall(function()
+            remoteUse:FireServer()
+        end)
+    end
+
+    local ch = getCharacter()
+    for _, child in ipairs(ch:GetChildren()) do
+        if child:IsA("Tool") then
+            local useRemote = child:FindFirstChild("Use")
+            if useRemote and useRemote:IsA("RemoteEvent") then
+                pcall(function()
+                    useRemote:FireServer()
+                end)
+            end
+            pcall(function()
+                child:Activate()
+            end)
+            break
+        end
+    end
+end
+
+local function useItemByName(itemName)
+    local tool = getToolByName(itemName)
     if not tool then
         return false
     end
 
-    local ok = pcall(function()
-        tool:Activate()
-    end)
+    equipTool(tool)
 
-    if not ok and mouse1click then
-        pcall(function()
-            mouse1click()
-        end)
+    local oldSkip = StarterGui:GetAttribute("SkipItemPrompt")
+    StarterGui:SetAttribute("SkipItemPrompt", true)
+    useCurrentEquippedItem()
+    task.wait(0.2)
+
+    if oldSkip == nil then
+        StarterGui:SetAttribute("SkipItemPrompt", false)
+    else
+        StarterGui:SetAttribute("SkipItemPrompt", oldSkip)
     end
 
-    return ok
+    return true
 end
 
-local function equipAnyCombatTool()
+local function getCombatTool()
     local ch = getCharacter()
-    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
 
-    local function validTool(t)
-        if not t:IsA("Tool") then
+    local blocked = {
+        ["stand arrow"] = true,
+        ["charged arrow"] = true,
+        ["anniversary arrow"] = true,
+        ["requiem arrow"] = true,
+        ["rokakaka"] = true,
+        ["new rokakaka"] = true,
+    }
+
+    local function valid(tool)
+        if not tool:IsA("Tool") then
             return false
         end
-
-        local n = string.lower(t.Name)
-        if string.find(n, "arrow", 1, true) then return false end
-        if string.find(n, "rokakaka", 1, true) then return false end
-        if string.find(n, "mask", 1, true) then return false end
-        if string.find(n, "diary", 1, true) then return false end
-
+        local n = string.lower(tool.Name)
+        if blocked[n] then
+            return false
+        end
         return true
     end
 
-    if ch then
-        for _, t in ipairs(ch:GetChildren()) do
-            if validTool(t) then
-                return t
-            end
+    for _, t in ipairs(ch:GetChildren()) do
+        if valid(t) then
+            return t
         end
     end
 
-    if backpack then
-        for _, t in ipairs(backpack:GetChildren()) do
-            if validTool(t) then
-                equipTool(t)
-                return t
-            end
+    for _, t in ipairs(bp and bp:GetChildren() or {}) do
+        if valid(t) then
+            equipTool(t)
+            return t
         end
     end
 
     return nil
 end
 
-local function hitNpc(npc)
-    local npcRoot = getRoot(npc)
-    if not npcRoot then
+local function mouseAttackPulse()
+    if mouse1press and mouse1release then
+        pcall(mouse1press)
+        task.wait(0.03)
+        pcall(mouse1release)
         return
     end
 
-    if Settings.farmLookAtNpc or Settings.dungeonLookAtNpc then
-        faceTarget(npcRoot.Position)
+    if mouse1click then
+        pcall(mouse1click)
+        return
     end
 
-    local tool = equipAnyCombatTool()
+    if VirtualInputManager then
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+            task.wait(0.03)
+            VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+        end)
+    end
+end
+
+local function attackTarget(target)
+    local targetRoot = getRoot(target)
+    if not targetRoot then
+        return
+    end
+
+    if Settings.farmLookAtNpc then
+        lookAt(targetRoot.Position)
+    end
+
+    local tool = getCombatTool()
     if tool then
-        activateTool(tool)
-    elseif mouse1click then
         pcall(function()
-            mouse1click()
+            tool:Activate()
+        end)
+    end
+
+    mouseAttackPulse()
+end
+
+local function pressKey(letter)
+    local key = Enum.KeyCode[letter]
+    if not key then
+        return
+    end
+
+    if keypress and keyrelease then
+        pcall(function()
+            keypress(key.Value)
+            task.wait(0.05)
+            keyrelease(key.Value)
+        end)
+        return
+    end
+
+    if VirtualInputManager then
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, key, false, game)
+            task.wait(0.05)
+            VirtualInputManager:SendKeyEvent(false, key, false, game)
         end)
     end
 end
 
-local function getEventsFolder()
-    return ReplicatedStorage:FindFirstChild("Events")
+local function castAutoSkills()
+    if not Settings.autoSkillsEnabled then
+        return
+    end
+
+    if os.clock() - lastSkillTick < Settings.autoSkillInterval then
+        return
+    end
+
+    for _, letter in ipairs(Settings.autoSkillKeys) do
+        pressKey(letter)
+        task.wait(0.04)
+    end
+
+    lastSkillTick = os.clock()
 end
 
-local function tryBuyItem(tag, option)
-    local events = getEventsFolder()
-    local buyItem = events and events:FindFirstChild("BuyItem")
+local function ensureStandSummoned()
+    if not Settings.autoSummonStand then
+        return
+    end
 
-    if buyItem and buyItem:IsA("RemoteEvent") then
+    local ch = LocalPlayer.Character
+    if not ch then
+        return
+    end
+
+    if currentStandCode() ~= "None" and not ch:FindFirstChild("Stand") then
+        pressKey("Q")
+        task.wait(0.1)
+    end
+end
+
+local function doBuy(tag, option)
+    local events = getEvents()
+    local buy = events and events:FindFirstChild("BuyItem")
+    if buy and buy:IsA("RemoteEvent") then
         pcall(function()
-            buyItem:FireServer(tag, option)
+            buy:FireServer(tag, option)
         end)
+    end
+end
+
+local function ensureStock(itemName, min, toggleBuy, tag, option)
+    if getToolAmount(itemName) >= min then
         return true
+    end
+
+    if toggleBuy then
+        doBuy(tag, option)
+        task.wait(0.35)
+    end
+
+    return getToolAmount(itemName) > 0
+end
+
+local function traitGoalReached()
+    if not Settings.standStopByTrait then
+        return false
+    end
+    return nameMatches(currentTrait(), Settings.standWantedTraits)
+end
+
+local function standGoalReached()
+    if not Settings.standStopByStand or #Settings.standWantedStands == 0 then
+        return false
+    end
+
+    local code = currentStandCode()
+    local display = getStandDisplayName(code)
+    return nameMatches(code, Settings.standWantedStands) or nameMatches(display, Settings.standWantedStands)
+end
+
+local function waitForStandValue(targetValue, timeout)
+    local start = os.clock()
+    while os.clock() - start < timeout do
+        if currentStandCode() == targetValue then
+            return true
+        end
+        task.wait(0.2)
+    end
+    return false
+end
+
+local function getDungeonNpcNames()
+    local list = {"Auto"}
+    local map = workspace:FindFirstChild("Map")
+    local npcs = map and map:FindFirstChild("NPCs")
+    if npcs then
+        for _, npc in ipairs(npcs:GetChildren()) do
+            table.insert(list, npc.Name)
+        end
+    end
+    table.sort(list)
+    return list
+end
+
+local function findDungeonNpcModel()
+    local map = workspace:FindFirstChild("Map")
+    local npcs = map and map:FindFirstChild("NPCs")
+    if not npcs then
+        return nil
+    end
+
+    if Settings.dungeonNpcName ~= "Auto" then
+        return npcs:FindFirstChild(Settings.dungeonNpcName)
+    end
+
+    local root = getPlayerRoot()
+    if not root then
+        return nil
+    end
+
+    local best, bestDist = nil, math.huge
+    for _, npc in ipairs(npcs:GetChildren()) do
+        local nr = getRoot(npc)
+        if nr then
+            local d = (root.Position - nr.Position).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = npc
+            end
+        end
+    end
+
+    return best
+end
+
+local function triggerAnyPrompt(model)
+    if not model then
+        return false
+    end
+
+    for _, d in ipairs(model:GetDescendants()) do
+        if d:IsA("ProximityPrompt") then
+            if fireproximityprompt then
+                pcall(function()
+                    fireproximityprompt(d)
+                end)
+                return true
+            end
+
+            pcall(function()
+                d:InputHoldBegin()
+                task.wait(0.15)
+                d:InputHoldEnd()
+            end)
+            return true
+        end
     end
 
     return false
 end
 
-local function ensureItemStock(itemName, minAmount, shouldBuy, merchantTag, merchantOption)
-    local amount = getToolAmount(itemName)
-    if amount >= minAmount then
-        return true
-    end
-
-    if shouldBuy then
-        tryBuyItem(merchantTag, merchantOption)
-        task.wait(0.35)
-    end
-
-    return getToolAmount(itemName) >= 1
+local function inLair()
+    local ch = LocalPlayer.Character
+    local flag = ch and ch:FindFirstChild("InLair")
+    return flag and flag.Value == true
 end
 
 local Window = Rayfield:CreateWindow({
     Name = "SUR Auto Hub | Rayfield",
     LoadingTitle = "SUR Auto Hub",
-    LoadingSubtitle = "Auto Farm / Stand / Dungeon",
-    ConfigurationSaving = {
-        Enabled = false,
-    },
-    Discord = {
-        Enabled = false,
-    },
+    LoadingSubtitle = "Rework Completo",
+    ConfigurationSaving = {Enabled = false},
+    Discord = {Enabled = false},
     KeySystem = false,
 })
 
@@ -545,26 +862,45 @@ local DungeonTab = Window:CreateTab("Auto Dungeon", 4483362458)
 local MiscTab = Window:CreateTab("Misc", 4483362458)
 
 AutoFarmTab:CreateToggle({
-    Name = "Auto Farm (Quest Recomendadas)",
+    Name = "Auto Farm",
     CurrentValue = false,
-    Flag = "af_toggle",
+    Flag = "af_enable",
     Callback = function(v)
         Settings.farmEnabled = v
-        if v then
-            notify("Auto Farm", "Ativado")
-        else
-            stopActiveTween()
-            notify("Auto Farm", "Desativado")
+        if not v then
+            stopTween()
         end
     end,
 })
 
-AutoFarmTab:CreateToggle({
-    Name = "Priorizar Quest Ativa",
-    CurrentValue = true,
-    Flag = "af_active_quest",
+AutoFarmTab:CreateDropdown({
+    Name = "Modo de Alvo",
+    Options = {"ActiveQuest", "Recommended", "Custom", "Nearest"},
+    CurrentOption = "ActiveQuest",
+    MultipleOptions = false,
+    Flag = "af_mode",
     Callback = function(v)
-        Settings.farmUseActiveQuest = v
+        Settings.farmTargetMode = firstOption(v) or "ActiveQuest"
+    end,
+})
+
+AutoFarmTab:CreateInput({
+    Name = "Inimigos Custom (A,B,C)",
+    CurrentValue = "",
+    PlaceholderText = "Ex: Pillerman,Kakyoin",
+    RemoveTextAfterFocusLost = false,
+    Flag = "af_custom_enemies",
+    Callback = function(v)
+        Settings.farmCustomEnemyInput = v
+    end,
+})
+
+AutoFarmTab:CreateToggle({
+    Name = "Auto Summon Stand (Q)",
+    CurrentValue = true,
+    Flag = "af_summon",
+    Callback = function(v)
+        Settings.autoSummonStand = v
     end,
 })
 
@@ -574,41 +910,39 @@ AutoFarmTab:CreateDropdown({
     CurrentOption = "Tween",
     MultipleOptions = false,
     Flag = "af_move",
-    Callback = function(opt)
-        Settings.farmMoveType = opt
+    Callback = function(v)
+        Settings.farmMoveType = firstOption(v) or "Tween"
     end,
 })
 
 AutoFarmTab:CreateSlider({
     Name = "Tween Speed",
-    Range = {60, 500},
+    Range = {40, 700},
     Increment = 5,
-    Suffix = " studs/s",
-    CurrentValue = 250,
-    Flag = "af_tween_speed",
+    CurrentValue = 260,
+    Flag = "af_speed",
     Callback = function(v)
         Settings.farmTweenSpeed = v
     end,
 })
 
 AutoFarmTab:CreateDropdown({
-    Name = "Posicao pra bater",
-    Options = {"Behind", "Above", "Front"},
+    Name = "Posicao de Ataque",
+    Options = {"Behind", "Front", "Above", "Under", "Left", "Right"},
     CurrentOption = "Behind",
     MultipleOptions = false,
     Flag = "af_pos",
-    Callback = function(opt)
-        Settings.farmAttackPosition = opt
+    Callback = function(v)
+        Settings.farmAttackPosition = firstOption(v) or "Behind"
     end,
 })
 
 AutoFarmTab:CreateSlider({
     Name = "Distancia de Ataque",
-    Range = {1, 12},
+    Range = {1, 35},
     Increment = 1,
-    Suffix = " studs",
     CurrentValue = 3,
-    Flag = "af_distance",
+    Flag = "af_dist",
     Callback = function(v)
         Settings.farmAttackDistance = v
     end,
@@ -616,9 +950,8 @@ AutoFarmTab:CreateSlider({
 
 AutoFarmTab:CreateSlider({
     Name = "Altura de Ataque",
-    Range = {0, 12},
+    Range = {-10, 25},
     Increment = 1,
-    Suffix = " studs",
     CurrentValue = 2,
     Flag = "af_height",
     Callback = function(v)
@@ -626,8 +959,19 @@ AutoFarmTab:CreateSlider({
     end,
 })
 
+AutoFarmTab:CreateSlider({
+    Name = "Intervalo de Hit",
+    Range = {0.05, 0.5},
+    Increment = 0.01,
+    CurrentValue = 0.12,
+    Flag = "af_hit_interval",
+    Callback = function(v)
+        Settings.farmHitInterval = v
+    end,
+})
+
 AutoFarmTab:CreateToggle({
-    Name = "Olhar para NPC",
+    Name = "Olhar pro NPC",
     CurrentValue = true,
     Flag = "af_look",
     Callback = function(v)
@@ -635,45 +979,114 @@ AutoFarmTab:CreateToggle({
     end,
 })
 
+AutoFarmTab:CreateSection("Auto Skills")
+
+AutoFarmTab:CreateToggle({
+    Name = "Auto Usar Skills",
+    CurrentValue = false,
+    Flag = "af_skills_enable",
+    Callback = function(v)
+        Settings.autoSkillsEnabled = v
+    end,
+})
+
+AutoFarmTab:CreateDropdown({
+    Name = "Teclas de Skill",
+    Options = COMBAT_KEYS,
+    CurrentOption = {"Z", "X", "C", "V"},
+    MultipleOptions = true,
+    Flag = "af_skills_keys",
+    Callback = function(v)
+        Settings.autoSkillKeys = v
+    end,
+})
+
+AutoFarmTab:CreateSlider({
+    Name = "Cooldown entre ciclos",
+    Range = {0.2, 4},
+    Increment = 0.1,
+    CurrentValue = 1,
+    Flag = "af_skills_interval",
+    Callback = function(v)
+        Settings.autoSkillInterval = v
+    end,
+})
+
 StandTab:CreateToggle({
     Name = "Auto Roll Stand",
     CurrentValue = false,
-    Flag = "stand_roll",
+    Flag = "st_enable",
     Callback = function(v)
         Settings.standEnabled = v
-        notify("Stand", v and "Auto roll ativado" or "Auto roll desativado")
-    end,
-})
-
-StandTab:CreateDropdown({
-    Name = "Raridade Minima",
-    Options = {"Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Godly"},
-    CurrentOption = "Epic",
-    MultipleOptions = false,
-    Flag = "stand_rarity",
-    Callback = function(opt)
-        Settings.standDesiredTier = TIER_TO_VALUE[opt] or 4
     end,
 })
 
 StandTab:CreateToggle({
-    Name = "Auto Usar Rokakaka",
+    Name = "Usar Rokakaka",
     CurrentValue = true,
-    Flag = "stand_use_roka",
+    Flag = "st_roka",
     Callback = function(v)
-        Settings.standAutoUseRokakaka = v
+        Settings.standUseRoka = v
+    end,
+})
+
+StandTab:CreateToggle({
+    Name = "Usar Stand Arrow",
+    CurrentValue = true,
+    Flag = "st_arrow",
+    Callback = function(v)
+        Settings.standUseArrow = v
     end,
 })
 
 StandTab:CreateSlider({
-    Name = "Delay entre rolagens",
-    Range = {1, 4},
+    Name = "Delay Roll",
+    Range = {0.6, 4},
     Increment = 0.1,
-    Suffix = " s",
     CurrentValue = 1.1,
-    Flag = "stand_delay",
+    Flag = "st_delay",
     Callback = function(v)
         Settings.standRollDelay = v
+    end,
+})
+
+StandTab:CreateToggle({
+    Name = "Parar por Trait",
+    CurrentValue = true,
+    Flag = "st_stop_trait",
+    Callback = function(v)
+        Settings.standStopByTrait = v
+    end,
+})
+
+StandTab:CreateDropdown({
+    Name = "Traits desejados",
+    Options = getAllTraitOptions(),
+    CurrentOption = {"Godly", "Demonic", "Legendary"},
+    MultipleOptions = true,
+    Flag = "st_traits",
+    Callback = function(v)
+        Settings.standWantedTraits = v
+    end,
+})
+
+StandTab:CreateToggle({
+    Name = "Parar por Stand",
+    CurrentValue = false,
+    Flag = "st_stop_stand",
+    Callback = function(v)
+        Settings.standStopByStand = v
+    end,
+})
+
+StandTab:CreateDropdown({
+    Name = "Stands desejados",
+    Options = getAllStandOptions(),
+    CurrentOption = {},
+    MultipleOptions = true,
+    Flag = "st_stands",
+    Callback = function(v)
+        Settings.standWantedStands = v
     end,
 })
 
@@ -682,22 +1095,20 @@ StandTab:CreateSection("Auto Buy")
 StandTab:CreateToggle({
     Name = "Auto Buy Stand Arrow",
     CurrentValue = false,
-    Flag = "buy_arrow_toggle",
+    Flag = "buy_arrow",
     Callback = function(v)
         Settings.autoBuyArrow = v
     end,
 })
 
 StandTab:CreateInput({
-    Name = "Tag Loja Arrow (ex: Merchant1)",
+    Name = "Tag Loja Arrow",
     CurrentValue = "Merchant1",
     PlaceholderText = "Merchant1",
     RemoveTextAfterFocusLost = false,
     Flag = "buy_arrow_tag",
     Callback = function(v)
-        if #v > 0 then
-            Settings.arrowMerchantTag = v
-        end
+        Settings.arrowMerchantTag = v
     end,
 })
 
@@ -706,18 +1117,18 @@ StandTab:CreateDropdown({
     Options = {"Option1", "Option2", "Option3", "Option4"},
     CurrentOption = "Option1",
     MultipleOptions = false,
-    Flag = "buy_arrow_option",
+    Flag = "buy_arrow_opt",
     Callback = function(v)
-        Settings.arrowMerchantOption = v
+        Settings.arrowMerchantOption = firstOption(v) or "Option1"
     end,
 })
 
 StandTab:CreateSlider({
-    Name = "Min Arrow no inventario",
-    Range = {1, 10},
+    Name = "Min Arrow",
+    Range = {1, 25},
     Increment = 1,
     CurrentValue = 1,
-    Flag = "arrow_stock",
+    Flag = "buy_arrow_min",
     Callback = function(v)
         Settings.minArrowStock = v
     end,
@@ -726,42 +1137,40 @@ StandTab:CreateSlider({
 StandTab:CreateToggle({
     Name = "Auto Buy Rokakaka",
     CurrentValue = false,
-    Flag = "buy_roka_toggle",
+    Flag = "buy_roka",
     Callback = function(v)
-        Settings.autoBuyRokakaka = v
+        Settings.autoBuyRoka = v
     end,
 })
 
 StandTab:CreateInput({
-    Name = "Tag Loja Roka (ex: Merchant1)",
+    Name = "Tag Loja Rokakaka",
     CurrentValue = "Merchant1",
     PlaceholderText = "Merchant1",
     RemoveTextAfterFocusLost = false,
     Flag = "buy_roka_tag",
     Callback = function(v)
-        if #v > 0 then
-            Settings.rokaMerchantTag = v
-        end
+        Settings.rokaMerchantTag = v
     end,
 })
 
 StandTab:CreateDropdown({
-    Name = "Opcao Roka",
+    Name = "Opcao Rokakaka",
     Options = {"Option1", "Option2", "Option3", "Option4"},
     CurrentOption = "Option2",
     MultipleOptions = false,
-    Flag = "buy_roka_option",
+    Flag = "buy_roka_opt",
     Callback = function(v)
-        Settings.rokaMerchantOption = v
+        Settings.rokaMerchantOption = firstOption(v) or "Option2"
     end,
 })
 
 StandTab:CreateSlider({
-    Name = "Min Rokakaka no inventario",
-    Range = {1, 15},
+    Name = "Min Rokakaka",
+    Range = {1, 30},
     Increment = 1,
-    CurrentValue = 2,
-    Flag = "roka_stock",
+    CurrentValue = 1,
+    Flag = "buy_roka_min",
     Callback = function(v)
         Settings.minRokaStock = v
     end,
@@ -770,12 +1179,50 @@ StandTab:CreateSlider({
 DungeonTab:CreateToggle({
     Name = "Auto Dungeon",
     CurrentValue = false,
-    Flag = "dungeon_toggle",
+    Flag = "dg_enable",
     Callback = function(v)
         Settings.dungeonEnabled = v
         if not v then
-            stopActiveTween()
+            stopTween()
         end
+    end,
+})
+
+DungeonTab:CreateDropdown({
+    Name = "Dungeon NPC",
+    Options = getDungeonNpcNames(),
+    CurrentOption = "Auto",
+    MultipleOptions = false,
+    Flag = "dg_npc",
+    Callback = function(v)
+        Settings.dungeonNpcName = firstOption(v) or "Auto"
+    end,
+})
+
+DungeonTab:CreateButton({
+    Name = "Atualizar Lista de Dungeon NPCs",
+    Callback = function()
+        notify("Dungeon", "Pra atualizar o dropdown no Rayfield, reabra o script.")
+    end,
+})
+
+DungeonTab:CreateToggle({
+    Name = "Auto iniciar dungeon no NPC",
+    CurrentValue = true,
+    Flag = "dg_start",
+    Callback = function(v)
+        Settings.dungeonAutoStart = v
+    end,
+})
+
+DungeonTab:CreateInput({
+    Name = "Inimigos da Dungeon (A,B,C)",
+    CurrentValue = "",
+    PlaceholderText = "vazio = qualquer hostil",
+    RemoveTextAfterFocusLost = false,
+    Flag = "dg_enemies",
+    Callback = function(v)
+        Settings.dungeonEnemyInput = v
     end,
 })
 
@@ -784,30 +1231,16 @@ DungeonTab:CreateDropdown({
     Options = {"Tween", "TP"},
     CurrentOption = "Tween",
     MultipleOptions = false,
-    Flag = "dungeon_move",
+    Flag = "dg_move",
     Callback = function(v)
-        Settings.dungeonMoveType = v
+        Settings.dungeonMoveType = firstOption(v) or "Tween"
     end,
-})
-
-DungeonTab:CreateToggle({
-    Name = "Olhar para alvo",
-    CurrentValue = true,
-    Flag = "dungeon_look",
-    Callback = function(v)
-        Settings.dungeonLookAtNpc = v
-    end,
-})
-
-DungeonTab:CreateParagraph({
-    Title = "Info",
-    Content = "Esse modo limpa mobs e tenta ir para partes com nome Objective/Goal/Boss/Portal quando nao achar alvo.",
 })
 
 MiscTab:CreateToggle({
     Name = "WalkSpeed",
     CurrentValue = false,
-    Flag = "misc_ws_toggle",
+    Flag = "ms_ws",
     Callback = function(v)
         Settings.walkSpeedEnabled = v
     end,
@@ -815,10 +1248,10 @@ MiscTab:CreateToggle({
 
 MiscTab:CreateSlider({
     Name = "Velocidade",
-    Range = {16, 200},
+    Range = {16, 220},
     Increment = 1,
     CurrentValue = 16,
-    Flag = "misc_ws",
+    Flag = "ms_ws_val",
     Callback = function(v)
         Settings.walkSpeed = v
     end,
@@ -827,7 +1260,7 @@ MiscTab:CreateSlider({
 MiscTab:CreateToggle({
     Name = "JumpPower",
     CurrentValue = false,
-    Flag = "misc_jp_toggle",
+    Flag = "ms_jp",
     Callback = function(v)
         Settings.jumpPowerEnabled = v
     end,
@@ -835,10 +1268,10 @@ MiscTab:CreateToggle({
 
 MiscTab:CreateSlider({
     Name = "Forca do Pulo",
-    Range = {50, 200},
+    Range = {50, 220},
     Increment = 1,
     CurrentValue = 50,
-    Flag = "misc_jp",
+    Flag = "ms_jp_val",
     Callback = function(v)
         Settings.jumpPower = v
     end,
@@ -847,7 +1280,7 @@ MiscTab:CreateSlider({
 MiscTab:CreateToggle({
     Name = "Noclip",
     CurrentValue = false,
-    Flag = "misc_noclip",
+    Flag = "ms_noclip",
     Callback = function(v)
         Settings.noclip = v
     end,
@@ -856,11 +1289,49 @@ MiscTab:CreateToggle({
 MiscTab:CreateToggle({
     Name = "Anti AFK",
     CurrentValue = true,
-    Flag = "misc_antiafk",
+    Flag = "ms_afk",
     Callback = function(v)
         Settings.antiAfk = v
     end,
 })
+
+MiscTab:CreateButton({
+    Name = "Status",
+    Callback = function()
+        local txt = string.format(
+            "Level: %s | Stand: %s | Trait: %s",
+            tostring(currentLevel()),
+            tostring(getStandDisplayName(currentStandCode())),
+            tostring(currentTrait())
+        )
+        notify("SUR Status", txt)
+    end,
+})
+
+RunService.Stepped:Connect(function()
+    if Settings.noclip then
+        local ch = LocalPlayer.Character
+        if ch then
+            for _, part in ipairs(ch:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end
+end)
+
+LocalPlayer.Idled:Connect(function()
+    if Settings.antiAfk then
+        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        task.wait(1)
+        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+    end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    hadRokaDeath = true
+end)
 
 task.spawn(function()
     while task.wait(0.2) do
@@ -876,87 +1347,56 @@ task.spawn(function()
     end
 end)
 
-RunService.Stepped:Connect(function()
-    if not Settings.noclip then
-        return
-    end
-
-    local ch = LocalPlayer.Character
-    if not ch then
-        return
-    end
-
-    for _, part in ipairs(ch:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.CanCollide = false
-        end
-    end
-end)
-
-if not antiAfkHooked then
-    antiAfkHooked = true
-    LocalPlayer.Idled:Connect(function()
-        if not Settings.antiAfk then
-            return
-        end
-        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-        task.wait(1)
-        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-    end)
-end
-
 task.spawn(function()
-    while task.wait(Settings.farmHitInterval) do
+    while task.wait(0.05) do
         if not Settings.farmEnabled then
             continue
         end
 
-        local root = getPlayerRoot()
-        if not root then
-            continue
-        end
-
-        local enemies = getFarmEnemyList()
-        local target = findNearestNpc(enemies)
+        local target = findNearestNpc(currentFarmEnemies())
         if target then
-            local targetRoot = getRoot(target)
-            if targetRoot then
-                local attackCf = getOffsetCFrame(
-                    targetRoot,
-                    Settings.farmAttackPosition,
-                    Settings.farmAttackDistance,
-                    Settings.farmAttackHeight
-                )
-                moveToCFrame(attackCf, Settings.farmMoveType, Settings.farmTweenSpeed)
-                hitNpc(target)
+            local tr = getRoot(target)
+            if tr then
+                ensureStandSummoned()
+                local cf = getOffsetCFrame(tr)
+                moveTo(cf, Settings.farmMoveType)
+                attackTarget(target)
+                castAutoSkills()
             end
         end
+
+        task.wait(Settings.farmHitInterval)
     end
 end)
 
 task.spawn(function()
-    while task.wait(0.3) do
+    while task.wait(0.2) do
         if not Settings.dungeonEnabled then
             continue
         end
 
-        local target = findNearestNpc(nil)
-        if target then
-            local targetRoot = getRoot(target)
-            if targetRoot then
-                local attackCf = getOffsetCFrame(
-                    targetRoot,
-                    Settings.farmAttackPosition,
-                    Settings.farmAttackDistance,
-                    Settings.farmAttackHeight
-                )
-                moveToCFrame(attackCf, Settings.dungeonMoveType, Settings.farmTweenSpeed)
-                hitNpc(target)
+        if not inLair() and Settings.dungeonAutoStart then
+            local npc = findDungeonNpcModel()
+            local npcRoot = getRoot(npc)
+            if npcRoot then
+                moveTo(npcRoot.CFrame + Vector3.new(0, 0, 3), Settings.dungeonMoveType)
+                local pr = getPlayerRoot()
+                if pr and (pr.Position - npcRoot.Position).Magnitude <= 12 then
+                    triggerAnyPrompt(npc)
+                end
             end
-        else
-            local objective = findDungeonObjectivePart()
-            if objective then
-                moveToCFrame(objective.CFrame + Vector3.new(0, 3, 0), Settings.dungeonMoveType, Settings.farmTweenSpeed)
+        end
+
+        local enemies = parseCsv(Settings.dungeonEnemyInput)
+        local target = findNearestNpc(#enemies > 0 and enemies or nil)
+        if target then
+            local tr = getRoot(target)
+            if tr then
+                ensureStandSummoned()
+                local cf = getOffsetCFrame(tr)
+                moveTo(cf, Settings.dungeonMoveType)
+                attackTarget(target)
+                castAutoSkills()
             end
         end
     end
@@ -968,63 +1408,39 @@ task.spawn(function()
             continue
         end
 
-        local currentTier = getCurrentStandTier()
-        if currentTier >= Settings.standDesiredTier then
+        if traitGoalReached() or standGoalReached() then
             continue
         end
 
-        ensureItemStock(
-            "Rokakaka",
-            Settings.minRokaStock,
-            Settings.autoBuyRokakaka,
-            Settings.rokaMerchantTag,
-            Settings.rokaMerchantOption
-        )
+        ensureStock("Rokakaka", Settings.minRokaStock, Settings.autoBuyRoka, Settings.rokaMerchantTag, Settings.rokaMerchantOption)
+        ensureStock("Stand Arrow", Settings.minArrowStock, Settings.autoBuyArrow, Settings.arrowMerchantTag, Settings.arrowMerchantOption)
 
-        ensureItemStock(
-            "Stand Arrow",
-            Settings.minArrowStock,
-            Settings.autoBuyArrow,
-            Settings.arrowMerchantTag,
-            Settings.arrowMerchantOption
-        )
-
-        if Settings.standAutoUseRokakaka and getCurrentStandName() ~= "None" then
-            local roka = getToolByName("Rokakaka") or getToolByName("New Rokakaka")
-            if roka then
-                equipTool(roka)
-                activateTool(roka)
-                task.wait(math.max(0.6, Settings.standRollDelay))
+        if Settings.standUseRoka and currentStandCode() ~= "None" then
+            hadRokaDeath = false
+            local usedRoka = useItemByName("Rokakaka") or useItemByName("New Rokakaka")
+            if usedRoka then
+                local okClear = waitForStandValue("None", 16)
+                if not okClear and hadRokaDeath then
+                    task.wait(1.5)
+                end
             end
         end
 
-        local arrow = getToolByName("Stand Arrow")
-        if arrow then
-            equipTool(arrow)
-            activateTool(arrow)
+        if Settings.standUseArrow and currentStandCode() == "None" then
+            local usedArrow = useItemByName("Stand Arrow")
+            if usedArrow then
+                local start = os.clock()
+                while os.clock() - start < 12 do
+                    if currentStandCode() ~= "None" then
+                        break
+                    end
+                    task.wait(0.25)
+                end
+            end
         end
 
         task.wait(Settings.standRollDelay)
     end
 end)
 
-local function statusText()
-    local tier = getCurrentStandTier()
-    local tierName = TIER_LABELS[tier] or tostring(tier)
-    local level = currentLevel()
-    return string.format("Level: %d | Stand Tier: %s", level, tierName)
-end
-
-MiscTab:CreateParagraph({
-    Title = "Status",
-    Content = statusText(),
-})
-
-MiscTab:CreateButton({
-    Name = "Mostrar Status Agora",
-    Callback = function()
-        notify("SUR Status", statusText())
-    end,
-})
-
-notify("SUR Hub", "Carregado! Abas: Auto Farm, Stand, Auto Dungeon, Misc")
+notify("SUR Hub", "Fix completo carregado: traits, roka->respawn->arrow, TP, dungeon por NPC, auto skills")
